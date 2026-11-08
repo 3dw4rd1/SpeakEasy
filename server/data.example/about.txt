@@ -1,0 +1,2 @@
+Free text about the speaker: name, company, what they usually dictate.
+The live copy lives on the server at /opt/speakeasy/data/about.txt (not in git).

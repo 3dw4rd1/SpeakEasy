@@ -1,0 +1,10 @@
+.env
+server/data/
+*.jks
+*.keystore
+local.properties
+.gradle/
+build/
+.idea/
+*.iml
+__pycache__/

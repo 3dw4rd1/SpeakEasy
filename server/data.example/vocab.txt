@@ -1,0 +1,4 @@
+# One term per line. Used to bias Whisper and to tell the cleanup model the exact spelling.
+# The live copy lives on the server at /opt/speakeasy/data/vocab.txt (not in git).
+Anthropic
+Claude

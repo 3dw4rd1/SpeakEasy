@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="kb_bg">#1E1F22</color>
+    <color name="key_bg">#2E3035</color>
+    <color name="key_text">#ECECEC</color>
+    <color name="mic_idle">#2F6FEB</color>
+    <color name="mic_rec">#E5484D</color>
+    <color name="mic_busy">#5A5D66</color>
+    <color name="status">#A9ACB3</color>
+</resources>
