@@ -52,9 +52,10 @@ STYLES = {
     "formal": "Formal: complete sentences, proper capitalisation and punctuation, no slang.",
     "casual": "Casual: proper capitalisation and punctuation, but keep contractions and the "
               "speaker's relaxed phrasing.",
-    "very_casual": "Very casual: like a quick text. Lowercase sentence starts are fine and no "
-                   "full stop at the end of a message, but keep question marks, exclamation "
-                   "marks and the commas that aid reading.",
+    "very_casual": "Very casual: like a quick text. Start sentences with a lowercase letter and "
+                   "leave off the full stop at the end of a message, but keep question marks, "
+                   "exclamation marks and the commas that aid reading. Names, places, brands, "
+                   "acronyms and the word 'I' keep their capitals (Matt, NZ, TCR, Jotun, I'm).",
 }
 
 CATEGORY_NOTES = {
