@@ -66,9 +66,11 @@ Aotearoa = New Zealand
 
 # How speech recognition tends to mangle the slang ('heard -> meant'). These are hints for the
 # cleanup model, used only when the slang fits the context; they are never blanket replacements.
-ciao -> chur
-chow -> chur
-cha -> chur
+ciao bro -> chur bro
+ciao mate -> chur mate
+chow bro -> chur bro
+chow mate -> chur mate
+cha bro -> chur bro
 cheer bro -> chur bro
 sure bro -> chur bro
 chabro -> chur bro
