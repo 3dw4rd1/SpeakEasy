@@ -19,6 +19,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.view.ViewGroup
+import android.widget.BaseAdapter
+import android.widget.GridView
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -60,6 +64,8 @@ class SpeakEasyIme : InputMethodService() {
     private var shift = Shift.OFF
     private var lastShiftTap = 0L
     private var symbols = false
+    private var emojiMode = false
+    private var emojiTab = 0
     private var idleText = "Tap to talk"
 
     // Auto-stop, adaptive to the room and the phone's mic level (they vary a lot by device).
@@ -199,6 +205,8 @@ class SpeakEasyIme : InputMethodService() {
         shiftKey = null
         val special = getColor(R.color.key_special)
 
+        if (emojiMode) { buildEmoji(area); return }
+
         if (!symbols) {
             area.addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
             area.addView(row(*"asdfghjkl".map { letter(it) }.toTypedArray(), sidePad = 0.5f))
@@ -216,9 +224,72 @@ class SpeakEasyIme : InputMethodService() {
         val toggle = key(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
             symbols = !symbols; buildKeys(); render()
         }.apply { background = keyBg(special) }
-        val space = key("space", 5f, textSize = 15f) { onSpace() }
+        val emoji = key("😊", 1f) { emojiMode = true; buildKeys() }.apply { background = keyBg(special) }
+        val space = key("space", 4f, textSize = 15f) { onSpace() }
         val enter = key("⏎", 1.5f) { enter() }.apply { background = keyBg(special) }
-        area.addView(row(toggle, punct(","), space, punct("."), enter))
+        area.addView(row(toggle, emoji, punct(","), space, punct("."), enter))
+    }
+
+    // ---- emoji panel -------------------------------------------------------
+
+    private fun recentEmoji(): List<String> =
+        getSharedPreferences("speakeasy", MODE_PRIVATE).getString("emoji_recent", "")!!
+            .split(" ").filter { it.isNotBlank() }
+
+    private fun addRecent(e: String) {
+        val list = (listOf(e) + recentEmoji().filter { it != e }).take(24)
+        getSharedPreferences("speakeasy", MODE_PRIVATE).edit()
+            .putString("emoji_recent", list.joinToString(" ")).apply()
+    }
+
+    /** Same height as the letter keys: category tabs, a scrolling grid, then ABC / space / ⌫. */
+    private fun buildEmoji(area: LinearLayout) {
+        val recent = recentEmoji()
+        val tabs = (if (recent.isNotEmpty()) listOf("🕘" to recent) else emptyList()) + Emoji.categories
+        if (emojiTab >= tabs.size) emojiTab = 0
+
+        val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabs.forEachIndexed { i, (icon, _) ->
+            tabRow.addView(TextView(this).apply {
+                text = icon; textSize = 20f; gravity = Gravity.CENTER
+                if (i == emojiTab) background = rounded(getColor(R.color.key_on))
+                setOnClickListener { it.haptic(); emojiTab = i; buildKeys() }
+            }, LinearLayout.LayoutParams(dp(44), dp(40)))
+        }
+        area.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(tabRow)
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
+
+        val items = tabs[emojiTab].second
+        val grid = GridView(this).apply {
+            numColumns = 8
+            stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            isVerticalScrollBarEnabled = false
+            adapter = object : BaseAdapter() {
+                override fun getCount() = items.size
+                override fun getItem(p: Int) = items[p]
+                override fun getItemId(p: Int) = p.toLong()
+                override fun getView(p: Int, convert: View?, parent: ViewGroup?): View =
+                    ((convert as? TextView) ?: TextView(this@SpeakEasyIme).apply {
+                        textSize = 26f; gravity = Gravity.CENTER
+                        layoutParams = android.widget.AbsListView.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
+                    }).apply { text = items[p] }
+            }
+            setOnItemClickListener { _, v, p, _ ->
+                v.haptic()
+                commit(items[p])
+                addRecent(items[p])
+            }
+        }
+        area.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(124)))
+
+        val special = getColor(R.color.key_special)
+        val abc = key("ABC", 1.5f, textSize = 15f) { emojiMode = false; symbols = false; buildKeys(); render() }
+            .apply { background = keyBg(special) }
+        val space = key("space", 5f, textSize = 15f) { onSpace() }
+        area.addView(row(abc, space, backspaceKey()))
     }
 
     private fun letter(c: Char): TextView = key(c.toString(), 1f) {
@@ -294,6 +365,7 @@ class SpeakEasyIme : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         symbols = false
+        emojiMode = false
         buildKeys()
         autoCaps()
         checkForUpdateQuietly()
