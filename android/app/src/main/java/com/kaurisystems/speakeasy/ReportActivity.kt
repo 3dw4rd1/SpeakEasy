@@ -3,8 +3,6 @@ package com.kaurisystems.speakeasy
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.res.ColorStateList
-import android.graphics.Color
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -43,7 +41,7 @@ class ReportActivity : Activity() {
         lateinit var input: EditText
         lateinit var status: TextView
         screen {
-            addView(heading("Report a bug or idea"))
+            addView(pageTitle("Report a bug or idea"))
             addView(note("Say what went wrong or what would make SpeakEasy better. You can dictate " +
                 "this with SpeakEasy. Reports are reviewed and fixed in later updates."))
 
@@ -56,14 +54,9 @@ class ReportActivity : Activity() {
                         .apply { marginEnd = if (i == 0) dp(4) else 0 }
                 }
             }
-            val normalText = buttons[0].textColors
             fun select(k: String) {
                 kind = k
-                buttons.forEachIndexed { i, b ->
-                    val on = kinds[i].first == k
-                    b.backgroundTintList = if (on) ColorStateList.valueOf(getColor(R.color.mic_idle)) else null
-                    if (on) b.setTextColor(Color.WHITE) else b.setTextColor(normalText)
-                }
+                buttons.forEachIndexed { i, b -> markSegment(b, kinds[i].first == k) }
             }
             buttons.forEachIndexed { i, b -> b.setOnClickListener { select(kinds[i].first) }; segs.addView(b) }
             addView(segs)

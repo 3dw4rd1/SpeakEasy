@@ -67,6 +67,8 @@ class SpeakEasyIme : InputMethodService() {
     private var shiftKey: TextView? = null
     private var settingsKey: TextView? = null
     private var updateAvailable = false
+    // Looked up once: asking the package manager on every redraw costs a system call each time.
+    private val installedCode by lazy { Updater(this).currentCode }
 
     private var state = State.IDLE
     private var brainDump = false
@@ -473,7 +475,9 @@ class SpeakEasyIme : InputMethodService() {
 
     private fun highlightAccent(row: AccentRow) {
         row.cells.forEachIndexed { i, cell ->
-            cell.background = if (i == row.selected) rounded(getColor(R.color.mic_idle), 8) else null
+            val on = i == row.selected
+            cell.background = if (on) rounded(getColor(R.color.mic_idle), 8) else null
+            cell.setTextColor(getColor(if (on) R.color.on_lime else R.color.key_text))
         }
     }
 
@@ -947,6 +951,10 @@ class SpeakEasyIme : InputMethodService() {
             else -> R.color.mic_idle
         }
         bar.background = rounded(getColor(color), 23)
+        // Dark text on the lime "Tap to talk"; white on the red/green/amber states.
+        val fg = getColor(if (color == R.color.mic_idle) R.color.on_lime else R.color.key_text)
+        status?.setTextColor(fg)
+        micIcon?.setColorFilter(fg)
         micIcon?.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
         bar.isEnabled = state != State.BUSY
         idleText = when {
@@ -965,11 +973,12 @@ class SpeakEasyIme : InputMethodService() {
             State.RECORDING -> Unit  // the meter updates it
         }
         dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
-        updateAvailable = sp().getLong("latest_code", 0) > Updater(this).currentCode
+        updateAvailable = sp().getLong("latest_code", 0) > installedCode
         settingsKey?.apply {
             // A dot on the gear when a new version is out; tapping it opens Settings → Update.
             text = if (updateAvailable) "⚙•" else "⚙"
             background = rounded(getColor(if (updateAvailable) R.color.mic_idle else R.color.key_special))
+            setTextColor(getColor(if (updateAvailable) R.color.on_lime else R.color.key_text))
         }
 
         val upper = shift != Shift.OFF

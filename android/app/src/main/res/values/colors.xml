@@ -1,13 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="kb_bg">#1E1F22</color>
-    <color name="key_bg">#2E3035</color>
-    <color name="key_text">#ECECEC</color>
-    <color name="mic_idle">#2F6FEB</color>
-    <color name="mic_rec">#E5484D</color>
-    <color name="mic_busy">#5A5D66</color>
-    <color name="mic_dump">#8E4EC6</color>
-    <color name="key_on">#4B3A63</color>
-    <color name="key_special">#3A3D44</color>
-    <color name="status">#A9ACB3</color>
+    <!-- Kauri Systems palette (kauri-systems.com): pine, cream, lime. -->
+
+    <!-- Keyboard: always Pine (dark), whatever the phone's mode. -->
+    <color name="kb_bg">#12291F</color>          <!-- pine-deep -->
+    <color name="key_bg">#1C3B31</color>         <!-- pine -->
+    <color name="key_text">#F2EFE6</color>       <!-- cream -->
+    <color name="key_special">#2A4A3E</color>
+    <color name="key_on">#52705F</color>         <!-- pine-soft: shift, Dump when on -->
+    <color name="mic_idle">#DCF14F</color>       <!-- lime: "Tap to talk" -->
+    <color name="on_lime">#12291F</color>        <!-- text/icons on lime -->
+    <color name="mic_rec">#D9534A</color>
+    <color name="mic_busy">#52705F</color>
+    <color name="mic_dump">#8A6A34</color>       <!-- kauri amber: brain dump / edit -->
+    <color name="status">#AFC0B4</color>
+
+    <!-- App screens, light mode (dark mode in values-night). -->
+    <color name="app_bg">#F2EFE6</color>         <!-- cream -->
+    <color name="app_surface">#FBFAF5</color>    <!-- paper -->
+    <color name="app_text">#1F2A26</color>       <!-- ink -->
+    <color name="app_muted">#5C665F</color>
+    <color name="app_heading">#1C3B31</color>    <!-- pine -->
+    <color name="app_kicker">#52705F</color>
+    <color name="app_rule">#2E1C3B31</color>     <!-- pine at 18% -->
+    <color name="app_accent">#1C3B31</color>     <!-- checkboxes, cursor, selected segment -->
+    <color name="app_on_accent">#F2EFE6</color>
+    <bool name="light_bars">true</bool>
 </resources>

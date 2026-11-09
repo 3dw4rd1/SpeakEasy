@@ -11,4 +11,34 @@
         <item name="android:minHeight">0dp</item>
         <item name="android:stateListAnimator">@null</item>
     </style>
+
+    <!-- App screens in the Kauri Systems look. Colours swap for dark mode via values-night. -->
+    <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowBackground">@color/app_bg</item>
+        <item name="android:statusBarColor">@color/app_bg</item>
+        <item name="android:navigationBarColor">@color/app_bg</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/light_bars</item>
+        <item name="android:colorPrimary">@color/app_bg</item>   <!-- action bar blends into the page -->
+        <item name="android:colorPrimaryDark">@color/app_bg</item>
+        <item name="android:colorAccent">@color/app_accent</item>
+        <item name="android:colorControlActivated">@color/app_accent</item>
+        <item name="android:textColorPrimary">@color/app_text</item>
+        <item name="android:textColorSecondary">@color/app_muted</item>
+        <item name="android:textColorHint">@color/app_muted</item>
+        <item name="android:textColor">@color/app_text</item>
+        <item name="android:buttonStyle">@style/AppButton</item>
+    </style>
+
+    <!-- Outline button like the website's .btn-outline: paper, thin pine rule, 6dp corners. -->
+    <style name="AppButton" parent="@android:style/Widget.DeviceDefault.Button">
+        <item name="android:background">@drawable/btn_bg</item>
+        <item name="android:textColor">@color/app_heading</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:minHeight">52dp</item>
+        <item name="android:paddingStart">16dp</item>
+        <item name="android:paddingEnd">16dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
 </resources>

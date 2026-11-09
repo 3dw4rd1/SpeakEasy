@@ -7,7 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
-import android.graphics.Color
+import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -28,12 +28,35 @@ import java.util.concurrent.Executors
 /** Small helpers for building screens in code (no AndroidX, no XML per screen). */
 fun Activity.dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+/** Source Serif 4, the Kauri Systems heading font. Android caches it after the first load. */
+fun Activity.serif(): Typeface = resources.getFont(R.font.source_serif)
+
 fun Activity.heading(t: String) = TextView(this).apply {
-    text = t; textSize = 18f; setPadding(0, dp(20), 0, dp(4))
+    text = t; textSize = 21f; typeface = serif(); setTextColor(getColor(R.color.app_heading))
+    setPadding(0, dp(24), 0, dp(6))
+}
+
+/** Big screen title with a small "KAURI SYSTEMS" label above, like the website's section heads. */
+fun Activity.pageTitle(t: String) = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL
+    setPadding(0, dp(8), 0, dp(4))
+    addView(TextView(context).apply {
+        text = "KAURI SYSTEMS"; textSize = 12f; letterSpacing = 0.08f
+        setTypeface(typeface, Typeface.BOLD); setTextColor(getColor(R.color.app_kicker))
+    })
+    addView(TextView(context).apply {
+        text = t; textSize = 32f; typeface = serif(); setTextColor(getColor(R.color.app_heading))
+    })
 }
 
 fun Activity.note(t: String) = TextView(this).apply {
-    text = t; textSize = 14f; alpha = 0.75f; setPadding(0, dp(2), 0, dp(6))
+    text = t; textSize = 14f; setTextColor(getColor(R.color.app_muted)); setPadding(0, dp(2), 0, dp(6))
+}
+
+/** Segmented-control look: the chosen option is filled pine (lime in dark mode). */
+fun Activity.markSegment(b: Button, on: Boolean) {
+    b.backgroundTintList = if (on) ColorStateList.valueOf(getColor(R.color.app_accent)) else null
+    b.setTextColor(getColor(if (on) R.color.app_on_accent else R.color.app_heading))
 }
 
 fun Activity.button(t: String, onClick: () -> Unit) = Button(this).apply {
@@ -135,7 +158,7 @@ class SettingsActivity : Activity() {
         updater = Updater(this)
 
         screen {
-            addView(TextView(this@SettingsActivity).apply { text = "SpeakEasy"; textSize = 26f })
+            addView(pageTitle("SpeakEasy"))
             steps = note("")
             addView(steps)
             updateStatus = note("")
@@ -212,9 +235,11 @@ class SettingsActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(10), 0, dp(4))
         }
-        block.addView(TextView(this).apply { text = c.label; textSize = 15f })
+        block.addView(TextView(this).apply { text = c.label; textSize = 15f; setTextColor(getColor(R.color.app_text)) })
 
-        val example = TextView(this).apply { textSize = 13f; alpha = 0.65f; setPadding(dp(2), dp(2), 0, 0) }
+        val example = TextView(this).apply {
+            textSize = 13f; setTextColor(getColor(R.color.app_muted)); setPadding(dp(2), dp(2), 0, 0)
+        }
         val segments = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val buttons = STYLE_LABELS.mapIndexed { i, label ->
             Button(this).apply {
@@ -227,14 +252,9 @@ class SettingsActivity : Activity() {
                     .apply { marginEnd = if (i < STYLE_LABELS.size - 1) dp(4) else 0 }
             }
         }
-        val normalText = buttons[0].textColors
         fun select(key: String) {
             prefs.setStyle(c, key)
-            buttons.forEachIndexed { i, b ->
-                val on = STYLE_KEYS[i] == key
-                b.backgroundTintList = if (on) ColorStateList.valueOf(getColor(R.color.mic_idle)) else null
-                if (on) b.setTextColor(Color.WHITE) else b.setTextColor(normalText)
-            }
+            buttons.forEachIndexed { i, b -> markSegment(b, STYLE_KEYS[i] == key) }
             example.text = STYLE_EXAMPLES[STYLE_KEYS.indexOf(key)]
         }
         buttons.forEachIndexed { i, b ->

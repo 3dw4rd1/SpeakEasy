@@ -33,7 +33,7 @@ class EditorActivity : Activity() {
         screen {
             if (kind == SNIPPETS) {
                 title = "Snippets"
-                addView(heading("Snippets"))
+                addView(pageTitle("Snippets"))
                 addView(note(
                     "Say \"insert <trigger>\" (or just the trigger where it fits) and the saved text " +
                     "goes in exactly as written.\n\nFormat: trigger on the first line, the text " +
@@ -41,7 +41,7 @@ class EditorActivity : Activity() {
                     "booking link\nhttps://…"))
             } else {
                 title = "Dictionary"
-                addView(heading("Dictionary"))
+                addView(pageTitle("Dictionary"))
                 addView(note(
                     "Names and words SpeakEasy should always spell your way, one per line.\n\n" +
                     "If it keeps mishearing something, add a rule:  misheard -> Correct\n" +

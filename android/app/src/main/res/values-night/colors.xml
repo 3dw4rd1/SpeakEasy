@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App screens in dark mode. The keyboard colours don't change (always Pine). -->
+    <color name="app_bg">#12291F</color>
+    <color name="app_surface">#1C3B31</color>
+    <color name="app_text">#F2EFE6</color>
+    <color name="app_muted">#AFC0B4</color>
+    <color name="app_heading">#F2EFE6</color>
+    <color name="app_kicker">#DCF14F</color>
+    <color name="app_rule">#2EF2EFE6</color>
+    <color name="app_accent">#DCF14F</color>
+    <color name="app_on_accent">#12291F</color>
+    <bool name="light_bars">false</bool>
+</resources>
