@@ -1,6 +1,6 @@
 """SpeakEasy proxy: phone audio in, clean text out.
 
-POST /v1/dictate     multipart: audio, app, category, style, mode, context, hint, duration_ms
+POST /v1/dictate     multipart: audio, app, category, style, mode, context, hint, duration_ms, private
 POST /v1/correction  JSON {raw, text, corrected, app}: learn from a fix the speaker made
 GET/PUT /v1/dictionary, /v1/snippets   JSON {"text": ...}: the editable data files
 
@@ -451,6 +451,7 @@ async def dictate(
     hint: str = Form(""),
     selection: str = Form(""),
     duration_ms: int = Form(0),
+    private: str = Form("0"),
     authorization: str | None = Header(None),
 ) -> dict:
     check_auth(authorization)
@@ -493,7 +494,7 @@ async def dictate(
     ms = {"stt": int((t1 - t0) * 1000), "clean": int((t2 - t1) * 1000)}
     log.info("dictate mode=%s app=%s cat=%s style=%s audio=%dms stt=%dms clean=%dms chars=%d",
              mode, app_pkg, category, style, duration_ms, ms["stt"], ms["clean"], len(text))
-    if SAVE_HISTORY:
+    if SAVE_HISTORY and private != "1":   # incognito fields are never logged
         append_jsonl("history.jsonl", {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mode": mode, "app": app_pkg, "category": category, "style": style,

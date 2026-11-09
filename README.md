@@ -45,6 +45,8 @@ Updates: download the new APK and install over the top (same signing key, settin
   you get an organised note with an Actions list (Claude Sonnet).
 - **History** – every dictation on the phone. Tap to copy; edit it and *Save correction*
   to teach SpeakEasy; failed dictations keep their audio and can be retried.
+- **Private fields** – in incognito tabs (or any field an app marks as private) dictation still
+  works, but nothing is saved: no phone History, no server log, no recent emojis.
 
 ## How it gets more accurate
 

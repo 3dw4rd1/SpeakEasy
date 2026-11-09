@@ -142,6 +142,7 @@ data class DictationRequest(
     val context: String,
     val hint: String,
     val selection: String = "",   // for mode "edit": the text being rewritten
+    val privateField: Boolean = false, // incognito/private field: the server mustn't log it
 )
 
 data class DictationResult(val text: String, val raw: String)
@@ -150,7 +151,7 @@ class Api(private val prefs: Prefs) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(200, TimeUnit.SECONDS)   // long brain dumps can take a few minutes
         .build()
     private val json = "application/json".toMediaType()
 
@@ -180,6 +181,7 @@ class Api(private val prefs: Prefs) {
             .addFormDataPart("hint", r.hint)
             .addFormDataPart("selection", r.selection)
             .addFormDataPart("duration_ms", r.durationMs.toString())
+            .addFormDataPart("private", if (r.privateField) "1" else "0")
             .build()
         val o = call(request("/v1/dictate").post(body).build())
         return DictationResult(o.optString("text", ""), o.optString("raw", ""))
