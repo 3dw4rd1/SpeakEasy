@@ -195,13 +195,16 @@ class SpeakEasyIme : InputMethodService() {
         }
     }
 
-    /** Keep a copy of the SpeakEasy dictionary for suggestions; refresh at most hourly. */
+    /** Keep a copy of the SpeakEasy dictionary + built-in slang for suggestions; refresh at most hourly. */
     private fun refreshVocabQuietly() {
         val now = System.currentTimeMillis()
         if (prefs.token.isBlank() || now - sp().getLong("vocab_fetched_at", 0) < 60 * 60 * 1000L) return
         sp().edit().putLong("vocab_fetched_at", now).apply()
         worker.execute {
-            val text = runCatching { api.getText("/v1/dictionary") }.getOrNull() ?: return@execute
+            val dictionary = runCatching { api.getText("/v1/dictionary") }.getOrNull() ?: return@execute
+            // Slang is optional: an older server without /v1/slang just gives no slang suggestions.
+            val slang = runCatching { api.getText("/v1/slang") }.getOrNull().orEmpty()
+            val text = dictionary + "\n" + slang
             sp().edit().putString("vocab_cache", text).apply()
             main.post { assist.setVocab(text) }
         }

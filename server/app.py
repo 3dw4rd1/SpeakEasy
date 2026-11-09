@@ -51,7 +51,8 @@ HALLUCINATIONS = {
 }
 
 STYLES = {
-    "formal": "Formal: complete sentences, proper capitalisation and punctuation, no slang.",
+    "formal": "Formal: complete sentences, proper capitalisation and punctuation. Don't add "
+              "slang, but keep any slang the speaker actually said.",
     "casual": "Casual: proper capitalisation and punctuation, but keep contractions and the "
               "speaker's relaxed phrasing.",
     "very_casual": "Very casual: like a quick text. Start sentences with a lowercase letter and "
@@ -124,19 +125,25 @@ def parse_vocab() -> tuple[list[str], list[tuple[str, str]]]:
     return list(dict.fromkeys(terms)), replacements
 
 
+SLANG_FILES = ["kiwi_slang.txt", "aussie_slang.txt"]
+
+
 def load_slang() -> list[tuple[str, str]]:
-    """kiwi_slang.txt (baked into the image): 'term = meaning' per line. '#' starts a comment."""
-    try:
-        text = (Path(__file__).parent / "kiwi_slang.txt").read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return []
-    out = []
+    """The *_slang.txt files (baked into the image): 'term = meaning' per line. '#' = comment."""
+    text = ""
+    for name in SLANG_FILES:
+        try:
+            text += (Path(__file__).parent / name).read_text(encoding="utf-8") + "\n"
+        except FileNotFoundError:
+            log.warning("slang file %s missing", name)
+    out, seen = [], set()
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
             continue
         term, _, meaning = (x.strip() for x in s.partition("="))
-        if term:
+        if term and term.lower() not in seen:   # e.g. 'ute' is in both lists
+            seen.add(term.lower())
             out.append((term, meaning))
     return out
 
@@ -171,7 +178,7 @@ def speaker_blocks(terms: list[str], replacements: list[tuple[str, str]],
             + ", ".join(terms))
     if SLANG:
         parts.append(
-            "New Zealand slang the speaker may use. Keep it as spoken and spell it like this; "
+            "New Zealand and Australian slang the speaker may use. Keep it as spoken and spell it like this; "
             "don't swap it for standard English or 'fix' it to a similar-sounding word "
             "(e.g. 'chur' is not 'sure', 'togs' is not 'dogs'). Only use a term when it was "
             "actually said:\n"
@@ -616,6 +623,13 @@ def data_endpoint(path: str, filename: str) -> None:
             raise HTTPException(status_code=413, detail="too long")
         write_text(filename, text.replace("\r\n", "\n"))
         return {"ok": True}
+
+
+@app.get("/v1/slang")
+async def slang(authorization: str | None = Header(None)) -> dict:
+    """The built-in slang words, one per line, for the phone's typing suggestions. Read-only."""
+    check_auth(authorization)
+    return {"text": "\n".join(SLANG_TERMS)}
 
 
 data_endpoint("/v1/dictionary", "vocab.txt")

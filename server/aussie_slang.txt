@@ -1,0 +1,48 @@
+# Built-in Australian slang, shipped with the server (your personal dictionary is separate).
+# Same format as kiwi_slang.txt: 'term = meaning' per line. '#' lines are ignored.
+
+# Everyday
+arvo = afternoon
+reckon = think
+heaps good = really good
+no dramas = no worries
+too easy = no problem
+how ya going = how are you
+fair dinkum = genuine, honestly
+ripper = great
+bonza = great
+stoked = really pleased
+dodgy = suspicious, poor quality
+daggy = uncool, scruffy
+bogan = uncouth person
+chuck a sickie = take a day off sick
+having a whinge = complaining
+she's apples = it'll be fine
+yeah nah = no
+mate = friend
+legend = great person
+suss = suspicious, check out
+
+# Things and places
+servo = petrol station
+bottle-o = bottle shop
+brekkie = breakfast
+avo = avocado
+sanga = sandwich
+snag = sausage
+barbie = barbecue
+esky = cooler box
+thongs = flip-flops
+footy = Aussie rules football
+maccas = McDonald's
+Woolies = Woolworths supermarket
+Coles = supermarket
+uni = university
+rego = car registration
+ute = pickup truck
+trackies = tracksuit pants
+cozzie = swimsuit
+doona = duvet
+tradie = tradesperson
+the G = the MCG (Melbourne Cricket Ground)
+Myki = Melbourne transport card

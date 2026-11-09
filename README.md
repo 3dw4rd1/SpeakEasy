@@ -37,8 +37,10 @@ Updates: download the new APK and install over the top (same signing key, settin
   set in the app. The app type comes from the app you're typing in.
 - **Dictionary** – words to always spell your way, plus `misheard -> Correct` rules.
   Edited in the app, stored on the server (`data/vocab.txt`).
-- **Kiwi slang** – a built-in list (`server/kiwi_slang.txt`: chur, sweet as, togs, whānau…)
-  so the cleanup keeps your slang instead of "fixing" it. Edit the file and redeploy to change it.
+- **Slang** – built-in Kiwi and Aussie lists (`server/kiwi_slang.txt`, `server/aussie_slang.txt`:
+  chur, sweet as, arvo, servo…). The cleanup keeps your slang instead of "fixing" it (in every
+  style, Formal included), and the keyboard suggests these words and won't autocorrect them.
+  See "Updating the slang lists" below.
 - **Snippets** – say "insert my email" and the saved text goes in exactly. Edited in the app
   (`data/snippets.txt`: trigger line, text, `---` between snippets).
 - **Brain dump** – tap *Dump*, then the mic, ramble for as long as you like, tap to finish:
@@ -56,6 +58,19 @@ Updates: download the new APK and install over the top (same signing key, settin
 4. `misheard -> Correct` rules are applied word-for-word after cleanup as a final net.
 5. The server keeps `data/history.jsonl` (raw + cleaned) so recurring mistakes can be reviewed
    and turned into dictionary rules. Turn off with `SAVE_HISTORY=0`.
+
+## Updating the slang lists
+
+The lists are part of the code (unlike your personal dictionary, which is edited in the app).
+
+1. Edit `server/kiwi_slang.txt` or `server/aussie_slang.txt` (on GitHub, the pencil icon works).
+   One word per line as `word = meaning`; the meaning helps Claude spot it. `#` lines are notes.
+2. Commit the change to `main`.
+3. On the VPS: `sh /opt/speakeasy/server/deploy/deploy.sh` (pulls the code and restarts).
+4. The phone picks up new words for suggestions within an hour. Dictation uses them straight away.
+
+To add a whole new list, create `server/<name>_slang.txt` and add its name to `SLANG_FILES`
+in `server/app.py`.
 
 ## Server
 
