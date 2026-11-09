@@ -83,8 +83,11 @@ def write_text(name: str, text: str) -> None:
 
 
 def append_jsonl(name: str, obj: dict) -> None:
-    with open(DATA_DIR / name, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    try:
+        with open(DATA_DIR / name, "a", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    except OSError as e:  # logging must never cost the speaker their dictation
+        log.error("can't write %s: %s", name, e)
 
 
 def read_jsonl(name: str, last: int) -> list[dict]:
