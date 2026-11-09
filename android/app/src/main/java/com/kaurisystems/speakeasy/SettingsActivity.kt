@@ -74,6 +74,10 @@ class SettingsActivity : Activity() {
             val r = runCatching { updater.latest() }
             main.post {
                 r.onSuccess { rel ->
+                    // Shared with the keyboard's ⚙ update dot.
+                    if (rel != null) getSharedPreferences("speakeasy", MODE_PRIVATE).edit()
+                        .putLong("latest_code", rel.code)
+                        .putLong("update_checked_at", System.currentTimeMillis()).apply()
                     if (rel != null && rel.code > updater.currentCode) {
                         release = rel
                         updateStatus.text = "Version ${updater.currentName} · update ${rel.name} available"

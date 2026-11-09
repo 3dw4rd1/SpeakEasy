@@ -51,6 +51,8 @@ class SpeakEasyIme : InputMethodService() {
     private var keysArea: LinearLayout? = null
     private val letterKeys = mutableListOf<TextView>()
     private var shiftKey: TextView? = null
+    private var settingsKey: TextView? = null
+    private var updateAvailable = false
 
     private var state = State.IDLE
     private var brainDump = false
@@ -130,9 +132,29 @@ class SpeakEasyIme : InputMethodService() {
         micBar = pill
         bar.addView(pill, LinearLayout.LayoutParams(0, dp(46), 1f))
 
-        val switchKb = key("⌨", 0f, dp(52), textSize = 20f) { switchKeyboard() }
-        bar.addView(switchKb, LinearLayout.LayoutParams(dp(52), dp(46)).apply { marginStart = dp(6) })
+        val gear = key("⚙", 0f, dp(46), textSize = 20f) { openSettings() }
+        settingsKey = gear
+        bar.addView(gear, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(6) })
+
+        val switchKb = key("⌨", 0f, dp(46), textSize = 20f) { switchKeyboard() }
+        bar.addView(switchKb, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
         return bar
+    }
+
+    /** Check GitHub for a newer version at most every 6 hours; show a dot on ⚙ if there is one. */
+    private fun checkForUpdateQuietly() {
+        val sp = getSharedPreferences("speakeasy", MODE_PRIVATE)
+        val updater = Updater(this)
+        val now = System.currentTimeMillis()
+        if (now - sp.getLong("update_checked_at", 0) > 6 * 60 * 60 * 1000L) {
+            sp.edit().putLong("update_checked_at", now).apply()
+            worker.execute {
+                val latest = runCatching { updater.latest()?.code }.getOrNull() ?: return@execute
+                sp.edit().putLong("latest_code", latest).apply()
+                main.post { render() }
+            }
+        }
+        updateAvailable = sp.getLong("latest_code", 0) > updater.currentCode
     }
 
     /** A key: TextView on a rounded background. width 0 + weight, or fixed width with weight 0. */
@@ -261,6 +283,7 @@ class SpeakEasyIme : InputMethodService() {
         symbols = false
         buildKeys()
         autoCaps()
+        checkForUpdateQuietly()
         render()
     }
 
@@ -474,6 +497,13 @@ class SpeakEasyIme : InputMethodService() {
             State.RECORDING -> Unit  // the meter updates it
         }
         dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
+        val sp = getSharedPreferences("speakeasy", MODE_PRIVATE)
+        updateAvailable = sp.getLong("latest_code", 0) > Updater(this).currentCode
+        settingsKey?.apply {
+            // A dot on the gear when a new version is out; tapping it opens Settings → Update.
+            text = if (updateAvailable) "⚙•" else "⚙"
+            background = rounded(getColor(if (updateAvailable) R.color.mic_idle else R.color.key_special))
+        }
 
         val upper = shift != Shift.OFF
         letterKeys.forEach { k -> k.text = if (upper) k.text.toString().uppercase() else k.text.toString().lowercase() }
