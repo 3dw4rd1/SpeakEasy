@@ -138,9 +138,10 @@ data class DictationRequest(
     val app: String,
     val category: Category,
     val style: String,
-    val mode: String,          // "dictate" or "braindump"
+    val mode: String,          // "dictate", "braindump" or "edit"
     val context: String,
     val hint: String,
+    val selection: String = "",   // for mode "edit": the text being rewritten
 )
 
 data class DictationResult(val text: String, val raw: String)
@@ -177,6 +178,7 @@ class Api(private val prefs: Prefs) {
             .addFormDataPart("mode", r.mode)
             .addFormDataPart("context", r.context)
             .addFormDataPart("hint", r.hint)
+            .addFormDataPart("selection", r.selection)
             .addFormDataPart("duration_ms", r.durationMs.toString())
             .build()
         val o = call(request("/v1/dictate").post(body).build())

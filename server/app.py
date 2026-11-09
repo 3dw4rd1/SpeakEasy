@@ -32,6 +32,7 @@ TOKEN = os.environ["SPEAKEASY_TOKEN"]
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-large-v3")
 CLEANUP_MODEL = os.environ.get("CLEANUP_MODEL", "claude-haiku-5-5")
 BRAINDUMP_MODEL = os.environ.get("BRAINDUMP_MODEL", "claude-sonnet-5-5")
+EDIT_MODEL = os.environ.get("EDIT_MODEL", "claude-sonnet-5-5")
 LANGUAGE = os.environ.get("LANGUAGE", "en")
 SAVE_HISTORY = os.environ.get("SAVE_HISTORY", "1") == "1"
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -218,6 +219,35 @@ def braindump_system(terms, replacements, snippets) -> list[dict]:
     return to_system([rules] + speaker_blocks(terms, replacements, snippets), [])
 
 
+def edit_system(category: str, style: str, terms, replacements, snippets) -> list[dict]:
+    rules = (
+        "The speaker selected some text and spoke an instruction for how to change it. Apply the "
+        "instruction and output only the new text that will replace the selection.\n\n"
+        "- The instruction comes from the speaker via speech-to-text (fix obvious mishearings). "
+        "Typical ones: 'make this more formal', 'shorter', 'friendlier', 'fix the grammar', "
+        "'turn it into bullet points', 'add that we can deliver Friday', 'translate to Māori'.\n"
+        "- If what he said is clearly new wording rather than an instruction, replace the "
+        "selection with that wording, cleaned up as dictation.\n"
+        "- Change only what the instruction asks for. Keep facts, names, numbers, prices, dates "
+        "and meaning. Don't add new claims or content he didn't ask for.\n"
+        "- Keep the selection's format (line breaks, greeting/sign-off, plain text) unless the "
+        "instruction changes it. New Zealand English, never US.\n"
+        "- Output only the replacement text: no preamble, quotes, options or explanation."
+    )
+    volatile = [f"Default tone for this app: {STYLES.get(style, STYLES['casual'])}",
+                CATEGORY_NOTES.get(category, "")]
+    return to_system([rules] + speaker_blocks(terms, replacements, snippets), volatile)
+
+
+def edit_message(instruction: str, selection: str, context: str) -> str:
+    parts = []
+    if context.strip():
+        parts.append("<text_before_selection>\n" + context[-1500:] + "\n</text_before_selection>")
+    parts.append(f"<selected_text>\n{selection}\n</selected_text>")
+    parts.append(f"<instruction>\n{instruction}\n</instruction>")
+    return "\n\n".join(parts)
+
+
 def to_system(stable: list[str], volatile: list[str]) -> list[dict]:
     system = [{"type": "text", "text": "\n\n".join(p for p in stable if p),
                "cache_control": {"type": "ephemeral"}}]
@@ -292,10 +322,11 @@ async def clean(raw: str, system: list[dict], user: str) -> str:
     return text_of(msg) or raw
 
 
-async def organise(raw: str, system: list[dict], user: str) -> str:
+async def smart(model: str, system: list[dict], user: str) -> str | None:
+    """Sonnet-class call for brain dumps and voice edits. None if it failed."""
     try:
         msg = await claude.beta.messages.create(
-            model=BRAINDUMP_MODEL,
+            model=model,
             max_tokens=16000,
             output_config={"effort": "low"},
             betas=["server-side-fallback-2026-07-01"],
@@ -304,11 +335,15 @@ async def organise(raw: str, system: list[dict], user: str) -> str:
             messages=[{"role": "user", "content": user}],
         )
     except anthropic.APIError as e:
-        log.error("claude braindump error: %s", e)
-        return raw
+        log.error("claude %s error: %s", model, e)
+        return None
     if msg.stop_reason == "refusal":
-        return raw
-    return text_of(msg) or raw
+        return None
+    return text_of(msg) or None
+
+
+async def organise(raw: str, system: list[dict], user: str) -> str:
+    return await smart(BRAINDUMP_MODEL, system, user) or raw
 
 
 def apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
@@ -365,6 +400,7 @@ async def dictate(
     mode: str = Form("dictate"),
     context: str = Form(""),
     hint: str = Form(""),
+    selection: str = Form(""),
     duration_ms: int = Form(0),
     authorization: str | None = Header(None),
 ) -> dict:
@@ -385,8 +421,17 @@ async def dictate(
     if raw.lower() in HALLUCINATIONS:
         return {"text": "", "raw": raw, "ms": {"stt": int((t1 - t0) * 1000)}}
 
+    if mode == "edit" and not selection.strip():
+        mode = "dictate"   # e.g. a History retry of an edit: nothing to edit, so just dictate
     user = user_message(raw, context, hint)
-    if mode == "braindump":
+    if mode == "edit":
+        text = await smart(EDIT_MODEL, edit_system(category, style, terms, replacements, snippets),
+                           edit_message(raw, selection[:20000], context))
+        if text is None:
+            # Never fall back to the raw instruction: it would replace the selection with
+            # "make this more formal". The app keeps the original text and shows the error.
+            raise HTTPException(status_code=502, detail="edit failed")
+    elif mode == "braindump":
         text = await organise(raw, braindump_system(terms, replacements, snippets), user)
     else:
         text = await clean(raw, dictation_system(category, style, terms, replacements, snippets), user)
@@ -403,6 +448,7 @@ async def dictate(
         append_jsonl("history.jsonl", {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mode": mode, "app": app_pkg, "category": category, "style": style,
+            **({"selection": selection[:5000]} if mode == "edit" else {}),
             "raw": raw, "text": text, "ms": ms,
         })
     return {"text": text, "raw": raw, "ms": ms}

@@ -5,21 +5,22 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
-import android.view.ViewGroup
 import android.widget.BaseAdapter
 import android.widget.GridView
 import android.widget.HorizontalScrollView
@@ -30,16 +31,21 @@ import java.io.File
 import java.util.concurrent.Executors
 
 /**
- * QWERTY keyboard with a one-tap voice bar on top.
+ * QWERTY keyboard with a one-tap voice bar on top and a suggestion strip.
  *
- * Tap the mic bar: it records, stops by itself when you pause (or on a second tap), and types
- * the cleaned text at the cursor. "Dump" switches to brain-dump mode: ramble, tap to finish,
- * and an organised note goes in.
+ * - Tap the mic bar: it records, stops by itself when you pause (or on a second tap), and types
+ *   the cleaned text at the cursor.
+ * - Select text first and the mic bar edits it instead: say "make this more formal" etc.
+ * - "Dump" switches to brain-dump mode: ramble, tap to finish, and an organised note goes in.
+ * - The strip shows word suggestions while typing, and ↶ Undo right after a dictation or edit.
  */
 class SpeakEasyIme : InputMethodService() {
 
     private enum class State { IDLE, RECORDING, BUSY }
     private enum class Shift { OFF, ONCE, LOCK }
+
+    /** Text we put in, and what it replaced (for an edit), so it can be undone. */
+    private data class Insertion(val text: String, val original: String, val until: Long)
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -47,12 +53,14 @@ class SpeakEasyIme : InputMethodService() {
     private lateinit var api: Api
     private lateinit var recorder: Recorder
     private lateinit var history: History
+    private lateinit var assist: TypingAssist
 
     private var root: LinearLayout? = null
     private var micBar: LinearLayout? = null
     private var micIcon: ImageView? = null
     private var status: TextView? = null
     private var dumpKey: TextView? = null
+    private var strip: LinearLayout? = null
     private var keysArea: LinearLayout? = null
     private val letterKeys = mutableListOf<TextView>()
     private var shiftKey: TextView? = null
@@ -68,6 +76,15 @@ class SpeakEasyIme : InputMethodService() {
     private var emojiTab = 0
     private var idleText = "Tap to talk"
 
+    // Field and selection state.
+    private var suggestionsOn = true
+    private var autocorrectOn = true
+    private var passwordField = false
+    private var hasSelection = false
+    private var editSelection: String? = null       // the selection being voice-edited
+    private var lastAutocorrect: Pair<String, String>? = null   // typed -> corrected
+    private var lastInsert: Insertion? = null
+
     // Auto-stop, adaptive to the room and the phone's mic level (they vary a lot by device).
     private val silenceMs = 2000L
     private val maxRecordMs = 10 * 60 * 1000L
@@ -82,7 +99,11 @@ class SpeakEasyIme : InputMethodService() {
         api = Api(prefs)
         recorder = Recorder(this)
         history = History(this)
+        assist = TypingAssist(this) { word, sugs -> showSuggestions(word, sugs) }
+        assist.setVocab(sp().getString("vocab_cache", "") ?: "")
     }
+
+    private fun sp() = getSharedPreferences("speakeasy", MODE_PRIVATE)
 
     // ---- layout ------------------------------------------------------------
 
@@ -105,6 +126,11 @@ class SpeakEasyIme : InputMethodService() {
             setPadding(dp(4), dp(6), dp(4), dp(8))
         }
         r.addView(toolbar())
+        strip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        r.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)))
         keysArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         r.addView(keysArea)
         root = r
@@ -117,12 +143,11 @@ class SpeakEasyIme : InputMethodService() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(6))
+            setPadding(0, 0, 0, dp(2))
         }
         dumpKey = key("Dump", 0f, dp(64), textSize = 14f) {
             if (state == State.IDLE) {
                 brainDump = !brainDump
-                idleText = if (brainDump) "Brain dump: tap, ramble, tap to finish" else "Tap to talk"
                 render()
             }
         }.also { it.layoutParams = LinearLayout.LayoutParams(dp(64), dp(46)).apply { marginEnd = dp(6) } }
@@ -139,7 +164,7 @@ class SpeakEasyIme : InputMethodService() {
         pill.addView(micIcon, LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(8) })
         status = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt()); textSize = 15f; maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            ellipsize = TextUtils.TruncateAt.END
         }
         pill.addView(status)
         micBar = pill
@@ -157,18 +182,28 @@ class SpeakEasyIme : InputMethodService() {
 
     /** Check GitHub for a newer version at most every 6 hours; show a dot on ⚙ if there is one. */
     private fun checkForUpdateQuietly() {
-        val sp = getSharedPreferences("speakeasy", MODE_PRIVATE)
         val updater = Updater(this)
         val now = System.currentTimeMillis()
-        if (now - sp.getLong("update_checked_at", 0) > 6 * 60 * 60 * 1000L) {
-            sp.edit().putLong("update_checked_at", now).apply()
+        if (now - sp().getLong("update_checked_at", 0) > 6 * 60 * 60 * 1000L) {
+            sp().edit().putLong("update_checked_at", now).apply()
             worker.execute {
                 val latest = runCatching { updater.latest()?.code }.getOrNull() ?: return@execute
-                sp.edit().putLong("latest_code", latest).apply()
+                sp().edit().putLong("latest_code", latest).apply()
                 main.post { render() }
             }
         }
-        updateAvailable = sp.getLong("latest_code", 0) > updater.currentCode
+    }
+
+    /** Keep a copy of the SpeakEasy dictionary for suggestions; refresh at most hourly. */
+    private fun refreshVocabQuietly() {
+        val now = System.currentTimeMillis()
+        if (prefs.token.isBlank() || now - sp().getLong("vocab_fetched_at", 0) < 60 * 60 * 1000L) return
+        sp().edit().putLong("vocab_fetched_at", now).apply()
+        worker.execute {
+            val text = runCatching { api.getText("/v1/dictionary") }.getOrNull() ?: return@execute
+            sp().edit().putString("vocab_cache", text).apply()
+            main.post { assist.setVocab(text) }
+        }
     }
 
     /** A key: TextView on a rounded background. width 0 + weight, or fixed width with weight 0. */
@@ -237,13 +272,11 @@ class SpeakEasyIme : InputMethodService() {
     // ---- emoji panel -------------------------------------------------------
 
     private fun recentEmoji(): List<String> =
-        getSharedPreferences("speakeasy", MODE_PRIVATE).getString("emoji_recent", "")!!
-            .split(" ").filter { it.isNotBlank() }
+        (sp().getString("emoji_recent", "") ?: "").split(" ").filter { it.isNotBlank() }
 
     private fun addRecent(e: String) {
         val list = (listOf(e) + recentEmoji().filter { it != e }).take(36)
-        getSharedPreferences("speakeasy", MODE_PRIVATE).edit()
-            .putString("emoji_recent", list.joinToString(" ")).apply()
+        sp().edit().putString("emoji_recent", list.joinToString(" ")).apply()
     }
 
     /** Same height as the letter keys: category tabs, a scrolling grid, then ABC / space / ⌫. */
@@ -266,33 +299,33 @@ class SpeakEasyIme : InputMethodService() {
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)))
 
         val items = tabs[emojiTab].second
-        val grid = GridView(this).apply {
-            numColumns = 8
-            stretchMode = GridView.STRETCH_COLUMN_WIDTH
-            isVerticalScrollBarEnabled = false
-            adapter = object : BaseAdapter() {
-                override fun getCount() = items.size
-                override fun getItem(p: Int) = items[p]
-                override fun getItemId(p: Int) = p.toLong()
-                override fun getView(p: Int, convert: View?, parent: ViewGroup?): View =
-                    ((convert as? TextView) ?: TextView(this@SpeakEasyIme).apply {
-                        textSize = 26f; gravity = Gravity.CENTER
-                        layoutParams = android.widget.AbsListView.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
-                    }).apply { text = items[p] }
-            }
-            setOnItemClickListener { _, v, p, _ ->
-                v.haptic()
-                commit(items[p])
-                addRecent(items[p])
-            }
-        }
         if (items.isEmpty()) {
             area.addView(TextView(this).apply {
                 text = "Emojis you use will appear here"; textSize = 14f; gravity = Gravity.CENTER
                 setTextColor(getColor(R.color.status))
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(124)))
         } else {
+            val grid = GridView(this).apply {
+                numColumns = 8
+                stretchMode = GridView.STRETCH_COLUMN_WIDTH
+                isVerticalScrollBarEnabled = false
+                adapter = object : BaseAdapter() {
+                    override fun getCount() = items.size
+                    override fun getItem(p: Int) = items[p]
+                    override fun getItemId(p: Int) = p.toLong()
+                    override fun getView(p: Int, convert: View?, parent: ViewGroup?): View =
+                        ((convert as? TextView) ?: TextView(this@SpeakEasyIme).apply {
+                            textSize = 26f; gravity = Gravity.CENTER
+                            layoutParams = android.widget.AbsListView.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
+                        }).apply { text = items[p] }
+                }
+                setOnItemClickListener { _, v, p, _ ->
+                    v.haptic()
+                    commit(items[p])
+                    addRecent(items[p])
+                }
+            }
             area.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(124)))
         }
 
@@ -303,23 +336,31 @@ class SpeakEasyIme : InputMethodService() {
         area.addView(row(abc, space, backspaceKey()))
     }
 
+    // ---- keys ----------------------------------------------------------------
+
     private fun letter(c: Char): TextView = key(c.toString(), 1f) {
+        lastAutocorrect = null
+        lastInsert = null
         val upper = shift != Shift.OFF
         commit(if (upper) c.uppercase() else c.toString())
         if (shift == Shift.ONCE) { shift = Shift.OFF; render() }
     }.also { letterKeys.add(it) }
 
-    private fun char(s: String): TextView = key(s, 1f) { commit(s) }
+    private fun char(s: String): TextView = key(s, 1f) { lastAutocorrect = null; commit(s) }
 
-    /** . , ? ! etc: no space before, one space after (like phone keyboards). */
+    /** . , ? ! etc: autocorrect the word, no space before, one space after. */
     private fun punct(s: String): TextView = key(s, 1f) {
         val ic = currentInputConnection ?: return@key
         val autoSpace = s in listOf(".", ",", "?", "!", ":", ";")
         if (autoSpace) {
+            if (!finishWord()) lastAutocorrect = null
             if (ic.getTextBeforeCursor(1, 0)?.toString() == " ") ic.deleteSurroundingText(1, 0)
             ic.commitText("$s ", 1)
             if (s in listOf(".", "?", "!")) autoCaps()
-        } else ic.commitText(s, 1)
+        } else {
+            lastAutocorrect = null
+            ic.commitText(s, 1)
+        }
     }
 
     private fun backspaceKey(): TextView {
@@ -334,8 +375,11 @@ class SpeakEasyIme : InputMethodService() {
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     v.haptic()
-                    sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
-                    main.postDelayed(repeat, 400)
+                    // Backspace straight after an autocorrect puts back what you typed.
+                    if (!revertAutocorrect()) {
+                        sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+                        main.postDelayed(repeat, 400)
+                    }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> main.removeCallbacks(repeat)
             }
@@ -360,6 +404,7 @@ class SpeakEasyIme : InputMethodService() {
         // A punctuation key already added the space: don't double it.
         val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: ""
         if (before.length == 2 && before[1] == ' ' && before[0] in ".,?!:;") return
+        if (!finishWord()) lastAutocorrect = null
         ic.commitText(" ", 1)
     }
 
@@ -373,13 +418,142 @@ class SpeakEasyIme : InputMethodService() {
         }
     }
 
+    // ---- suggestions, autocorrect, undo -------------------------------------
+
+    /** The word right before the cursor ("" if the cursor follows a space or punctuation). */
+    private fun currentWord(): String {
+        val before = currentInputConnection?.getTextBeforeCursor(48, 0)?.toString() ?: return ""
+        return Regex("[\\p{L}\\p{N}'’-]+$").find(before)?.value ?: ""
+    }
+
+    private fun refreshWord() {
+        if (!suggestionsOn || hasSelection || emojiMode) { showSuggestions("", emptyList()); return }
+        assist.update(currentWord())
+    }
+
+    /** Autocorrect the word before the cursor if it's an obvious typo. Returns true if it did. */
+    private fun finishWord(): Boolean {
+        if (!autocorrectOn) return false
+        val ic = currentInputConnection ?: return false
+        val word = currentWord()
+        val fix = assist.autocorrectFor(word) ?: return false
+        ic.deleteSurroundingText(word.length, 0)
+        ic.commitText(fix, 1)
+        lastAutocorrect = word to fix
+        return true
+    }
+
+    private fun revertAutocorrect(): Boolean {
+        val (typed, fixed) = lastAutocorrect ?: return false
+        lastAutocorrect = null
+        val ic = currentInputConnection ?: return false
+        val before = ic.getTextBeforeCursor(fixed.length + 2, 0)?.toString() ?: return false
+        val tail = when {
+            before.endsWith("$fixed ") -> ""
+            before.length >= 2 && before.endsWith(" ") && before.dropLast(2).endsWith(fixed) -> before[before.length - 2].toString()
+            else -> return false
+        }
+        ic.deleteSurroundingText(fixed.length + tail.length + 1, 0)
+        ic.commitText(typed + tail, 1)
+        return true
+    }
+
+    private fun pickSuggestion(word: String, choice: String) {
+        val ic = currentInputConnection ?: return
+        lastAutocorrect = null
+        if (currentWord() == word) ic.deleteSurroundingText(word.length, 0)
+        ic.commitText("$choice ", 1)
+    }
+
+    private fun showSuggestions(word: String, suggestions: List<String>) {
+        val undo = lastInsert
+        if (undo != null && System.currentTimeMillis() < undo.until) {
+            fillStrip(listOf("↶ Undo" to { undoLast() }), bold = 0)
+            return
+        }
+        if (word.isEmpty() || suggestions.isEmpty()) { fillStrip(emptyList(), -1); return }
+        // Bold the word that space will put in (the autocorrection, if there is one).
+        val fix = if (autocorrectOn) assist.autocorrectFor(word) else null
+        val bold = suggestions.indexOfFirst { it == (fix ?: word) }
+        fillStrip(suggestions.map { s -> s to { pickSuggestion(word, s) } }, bold)
+    }
+
+    private fun fillStrip(items: List<Pair<String, () -> Unit>>, bold: Int) {
+        val s = strip ?: return
+        s.removeAllViews()
+        items.forEachIndexed { i, (label, action) ->
+            if (i > 0) s.addView(View(this).apply { setBackgroundColor(getColor(R.color.key_bg)) },
+                LinearLayout.LayoutParams(dp(1), dp(22)))
+            s.addView(TextView(this).apply {
+                text = label; textSize = 16f; gravity = Gravity.CENTER; maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setTextColor(getColor(R.color.key_text))
+                if (i == bold) setTypeface(null, Typeface.BOLD)
+                setOnClickListener { it.haptic(); action() }
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f))
+        }
+    }
+
+    private fun showUndo(text: String, original: String) {
+        lastInsert = Insertion(text, original, System.currentTimeMillis() + 8000)
+        showSuggestions("", emptyList())
+        main.postDelayed({ refreshWord() }, 8100)
+    }
+
+    private fun undoLast() {
+        val ins = lastInsert ?: return
+        lastInsert = null
+        val ic = currentInputConnection ?: return
+        val before = ic.getTextBeforeCursor(ins.text.length, 0)?.toString()
+        if (before == ins.text) {
+            ic.deleteSurroundingText(ins.text.length, 0)
+            if (ins.original.isNotEmpty()) ic.commitText(ins.original, 1)
+            flash(if (ins.original.isNotEmpty()) "Edit undone" else "Dictation removed")
+        } else {
+            flash("Can't undo - the text has changed")
+        }
+        refreshWord()
+    }
+
+    override fun onUpdateSelection(oldSelStart: Int, oldSelEnd: Int, newSelStart: Int, newSelEnd: Int,
+                                   candidatesStart: Int, candidatesEnd: Int) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        val sel = newSelEnd > newSelStart
+        if (sel != hasSelection) {
+            hasSelection = sel
+            if (state == State.IDLE) render()
+        }
+        refreshWord()
+    }
+
+    // ---- field lifecycle -------------------------------------------------
+
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        val type = info?.inputType ?: 0
+        val cls = type and InputType.TYPE_MASK_CLASS
+        val variation = type and InputType.TYPE_MASK_VARIATION
+        passwordField = cls == InputType.TYPE_CLASS_TEXT && variation in listOf(
+            InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+            InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) ||
+            (cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+        val noSuggestions = (type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0
+        val addressy = variation in listOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
+            InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_URI)
+        suggestionsOn = cls == InputType.TYPE_CLASS_TEXT && !passwordField && !noSuggestions
+        autocorrectOn = suggestionsOn && !addressy
+        hasSelection = false
+        lastAutocorrect = null
+        lastInsert = null
+
         symbols = false
         emojiMode = false
         buildKeys()
         autoCaps()
+        if (suggestionsOn) assist.start()
         checkForUpdateQuietly()
+        refreshVocabQuietly()
+        refreshWord()
         render()
     }
 
@@ -397,6 +571,7 @@ class SpeakEasyIme : InputMethodService() {
 
     override fun onDestroy() {
         recorder.cancel()
+        assist.stop()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -412,6 +587,10 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     private fun startRecording() {
+        if (passwordField) {
+            flash("Voice is off in password fields")
+            return
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             flash("Microphone not allowed - opening settings")
             openSettings()
@@ -422,6 +601,9 @@ class SpeakEasyIme : InputMethodService() {
             openSettings()
             return
         }
+        // With text selected, this recording is an instruction for how to change it.
+        editSelection = if (brainDump) null
+            else currentInputConnection?.getSelectedText(0)?.toString()?.takeIf { it.isNotBlank() }
         try {
             recorder.start()
         } catch (e: Exception) {
@@ -464,7 +646,11 @@ class SpeakEasyIme : InputMethodService() {
             }
 
             val secs = elapsed / 1000
-            val label = if (brainDump) "Brain dump" else "Listening"
+            val label = when {
+                editSelection != null -> "Say the change"
+                brainDump -> "Brain dump"
+                else -> "Listening"
+            }
             status?.text = "%s  %d:%02d · tap to finish".format(label, secs / 60, secs % 60)
 
             // Brain dumps have long thinking pauses: only stop on a tap.
@@ -480,6 +666,7 @@ class SpeakEasyIme : InputMethodService() {
         val ms = recorder.stop()
         if (ms < 400) {
             state = State.IDLE
+            editSelection = null
             flash("Too short - tap and speak")
             return
         }
@@ -489,7 +676,12 @@ class SpeakEasyIme : InputMethodService() {
         val info = currentInputEditorInfo
         val pkg = info?.packageName ?: ""
         val category = Category.of(pkg)
-        val mode = if (brainDump) "braindump" else "dictate"
+        val selection = editSelection
+        val mode = when {
+            selection != null -> "edit"
+            brainDump -> "braindump"
+            else -> "dictate"
+        }
         val context = if (prefs.sendContext) {
             currentInputConnection?.getTextBeforeCursor(1500, 0)?.toString() ?: ""
         } else ""
@@ -499,7 +691,7 @@ class SpeakEasyIme : InputMethodService() {
         val req = DictationRequest(
             audio = audio, durationMs = ms, app = pkg, category = category,
             style = prefs.style(category), mode = mode, context = context,
-            hint = info?.hintText?.toString() ?: "",
+            hint = info?.hintText?.toString() ?: "", selection = selection ?: "",
         )
 
         worker.execute {
@@ -518,10 +710,14 @@ class SpeakEasyIme : InputMethodService() {
             }
             main.post {
                 state = State.IDLE
-                if (brainDump) { brainDump = false; idleText = "Tap to talk" }
+                editSelection = null
+                if (brainDump) brainDump = false
                 result.onSuccess { r ->
-                    if (r.text.isBlank()) flash("Didn't catch anything")
-                    else { insert(r.text); render() }
+                    when {
+                        r.text.isBlank() -> flash("Didn't catch anything")
+                        selection != null -> replaceSelection(selection, r.text)
+                        else -> { insert(r.text); render() }
+                    }
                 }.onFailure { e ->
                     flash((e.message ?: "Network error") + " - saved in History")
                 }
@@ -529,7 +725,7 @@ class SpeakEasyIme : InputMethodService() {
         }
     }
 
-    /** Show a message in the bar for a few seconds, then go back to "Tap to talk". */
+    /** Show a message in the bar for a few seconds, then go back to the normal label. */
     private fun flash(msg: String) {
         render()
         status?.text = msg
@@ -542,19 +738,39 @@ class SpeakEasyIme : InputMethodService() {
         val ic = currentInputConnection
         if (ic == null) {
             // Field went away while we were waiting: don't lose the dictation.
-            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-            cm.setPrimaryClip(ClipData.newPlainText("SpeakEasy", text))
+            copyToClipboard(text)
             return
         }
         val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
         val needsSpace = before.isNotEmpty() && !before.last().isWhitespace() && !text.first().isWhitespace()
-        ic.commitText(if (needsSpace) " $text" else text, 1)
+        val inserted = if (needsSpace) " $text" else text
+        ic.commitText(inserted, 1)
         autoCaps()
+        showUndo(inserted, "")
+    }
+
+    /** Swap the voice-edited selection for the rewritten text, if it's still selected. */
+    private fun replaceSelection(original: String, rewritten: String) {
+        val ic = currentInputConnection
+        if (ic == null || ic.getSelectedText(0)?.toString() != original) {
+            copyToClipboard(rewritten)
+            flash("Selection changed - the edit is on your clipboard")
+            return
+        }
+        ic.commitText(rewritten, 1)
+        render()
+        showUndo(rewritten, original)
+    }
+
+    private fun copyToClipboard(text: String) {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("SpeakEasy", text))
     }
 
     private fun commit(s: String) { currentInputConnection?.commitText(s, 1) }
 
     private fun enter() {
+        lastAutocorrect = null
         val ic = currentInputConnection ?: return
         val info = currentInputEditorInfo
         val action = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
@@ -578,23 +794,33 @@ class SpeakEasyIme : InputMethodService() {
 
     private fun render() {
         val bar = micBar ?: return
+        val editing = hasSelection && !brainDump
         val color = when {
             state == State.RECORDING -> R.color.mic_rec
             state == State.BUSY -> R.color.mic_busy
-            brainDump -> R.color.mic_dump
+            brainDump || editing -> R.color.mic_dump
             else -> R.color.mic_idle
         }
         bar.background = rounded(getColor(color), 23)
         micIcon?.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
         bar.isEnabled = state != State.BUSY
+        idleText = when {
+            passwordField -> "Voice off in password fields"
+            brainDump -> "Brain dump: tap, ramble, tap to finish"
+            editing -> "Edit selection: tap and say the change"
+            else -> "Tap to talk"
+        }
         when (state) {
             State.IDLE -> status?.text = idleText
-            State.BUSY -> status?.text = if (brainDump) "Organising your thoughts…" else "Writing…"
+            State.BUSY -> status?.text = when {
+                editSelection != null -> "Rewriting…"
+                brainDump -> "Organising your thoughts…"
+                else -> "Writing…"
+            }
             State.RECORDING -> Unit  // the meter updates it
         }
         dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
-        val sp = getSharedPreferences("speakeasy", MODE_PRIVATE)
-        updateAvailable = sp.getLong("latest_code", 0) > Updater(this).currentCode
+        updateAvailable = sp().getLong("latest_code", 0) > Updater(this).currentCode
         settingsKey?.apply {
             // A dot on the gear when a new version is out; tapping it opens Settings → Update.
             text = if (updateAvailable) "⚙•" else "⚙"

@@ -60,6 +60,7 @@ class HistoryActivity : Activity() {
             val tag = when {
                 e.error.isNotEmpty() -> "⚠ FAILED"
                 e.mode == "braindump" -> "Brain dump"
+                e.mode == "edit" -> "Voice edit"
                 else -> appName(e.app)
             }
             val body = if (e.error.isNotEmpty()) "Tap to retry - ${e.error}" else e.text
