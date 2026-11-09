@@ -6,30 +6,35 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
-import android.widget.Button
-import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
 import java.util.concurrent.Executors
 
 /**
- * Voice keyboard. One tap on the mic starts recording; it stops on a second tap or,
- * with auto-stop on, after a pause in speech. The cleaned text is typed at the cursor.
- * "Dump" switches to brain-dump mode: ramble as long as you like, tap to finish, and an
- * organised note is inserted.
+ * QWERTY keyboard with a one-tap voice bar on top.
+ *
+ * Tap the mic bar: it records, stops by itself when you pause (or on a second tap), and types
+ * the cleaned text at the cursor. "Dump" switches to brain-dump mode: ramble, tap to finish,
+ * and an organised note goes in.
  */
 class SpeakEasyIme : InputMethodService() {
 
     private enum class State { IDLE, RECORDING, BUSY }
+    private enum class Shift { OFF, ONCE, LOCK }
 
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
@@ -38,17 +43,27 @@ class SpeakEasyIme : InputMethodService() {
     private lateinit var recorder: Recorder
     private lateinit var history: History
 
+    private var root: LinearLayout? = null
+    private var micBar: LinearLayout? = null
+    private var micIcon: ImageView? = null
     private var status: TextView? = null
-    private var mic: ImageButton? = null
-    private var brain: Button? = null
+    private var dumpKey: TextView? = null
+    private var keysArea: LinearLayout? = null
+    private val letterKeys = mutableListOf<TextView>()
+    private var shiftKey: TextView? = null
+
     private var state = State.IDLE
     private var brainDump = false
+    private var shift = Shift.OFF
+    private var lastShiftTap = 0L
+    private var symbols = false
+    private var idleText = "Tap to talk"
 
-    // Auto-stop: once speech is heard, stop after this much quiet.
-    private val silenceMs = 2500L
-    private val speechLevel = 2200
-    private val quietLevel = 1300
+    // Auto-stop, adaptive to the room and the phone's mic level (they vary a lot by device).
+    private val silenceMs = 2000L
     private val maxRecordMs = 10 * 60 * 1000L
+    private var noiseFloor = 0.0
+    private var speechLevel = 0.0
     private var heardSpeech = false
     private var quietSince = 0L
 
@@ -60,33 +75,192 @@ class SpeakEasyIme : InputMethodService() {
         history = History(this)
     }
 
-    override fun onCreateInputView(): View {
-        val v = layoutInflater.inflate(R.layout.keyboard, null)
-        status = v.findViewById(R.id.status)
-        mic = v.findViewById(R.id.mic)
-        brain = v.findViewById(R.id.brain)
+    // ---- layout ------------------------------------------------------------
 
-        mic!!.setOnClickListener { it.haptic(); toggle() }
-        brain!!.setOnClickListener {
-            it.haptic()
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun rounded(color: Int, radius: Int = 8) = GradientDrawable().apply {
+        setColor(color); cornerRadius = dp(radius).toFloat()
+    }
+
+    override fun onCreateInputView(): View {
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(getColor(R.color.kb_bg))
+            setPadding(dp(4), dp(6), dp(4), dp(8))
+        }
+        r.addView(toolbar())
+        keysArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        r.addView(keysArea)
+        root = r
+        buildKeys()
+        render()
+        return r
+    }
+
+    private fun toolbar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        dumpKey = key("Dump", 0f, dp(64), textSize = 14f) {
             if (state == State.IDLE) {
                 brainDump = !brainDump
-                setStatus(if (brainDump) "Brain dump: tap the mic, ramble, tap again to finish" else "Tap to talk")
+                idleText = if (brainDump) "Brain dump: tap, ramble, tap to finish" else "Tap to talk"
                 render()
             }
+        }.also { it.layoutParams = LinearLayout.LayoutParams(dp(64), dp(46)).apply { marginEnd = dp(6) } }
+        bar.addView(dumpKey)
+
+        val pill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(12), 0, dp(12), 0)
+            isClickable = true
+            setOnClickListener { it.haptic(); toggle() }
         }
-        v.findViewById<Button>(R.id.switch_kb).setOnClickListener { switchKeyboard() }
-        v.findViewById<Button>(R.id.space).setOnClickListener { commit(" ") }
-        v.findViewById<Button>(R.id.comma).setOnClickListener { commit(",") }
-        v.findViewById<Button>(R.id.period).setOnClickListener { commit(".") }
-        v.findViewById<Button>(R.id.enter).setOnClickListener { enter() }
-        setupBackspace(v.findViewById(R.id.backspace))
+        micIcon = ImageView(this).apply { setImageResource(R.drawable.ic_mic) }
+        pill.addView(micIcon, LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(8) })
+        status = TextView(this).apply {
+            setTextColor(0xFFFFFFFF.toInt()); textSize = 15f; maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        pill.addView(status)
+        micBar = pill
+        bar.addView(pill, LinearLayout.LayoutParams(0, dp(46), 1f))
+
+        val switchKb = key("⌨", 0f, dp(52), textSize = 20f) { switchKeyboard() }
+        bar.addView(switchKb, LinearLayout.LayoutParams(dp(52), dp(46)).apply { marginStart = dp(6) })
+        return bar
+    }
+
+    /** A key: TextView on a rounded background. width 0 + weight, or fixed width with weight 0. */
+    private fun key(label: String, weight: Float, width: Int = 0, textSize: Float = 20f,
+                    onTap: (() -> Unit)?): TextView = TextView(this).apply {
+        text = label
+        this.textSize = textSize
+        gravity = Gravity.CENTER
+        setTextColor(getColor(R.color.key_text))
+        background = rounded(getColor(R.color.key_bg))
+        layoutParams = LinearLayout.LayoutParams(width, dp(48), weight).apply {
+            setMargins(dp(3), dp(4), dp(3), dp(4))
+        }
+        if (onTap != null) setOnClickListener { it.haptic(); onTap() }
+    }
+
+    private fun row(vararg views: View, sidePad: Float = 0f): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            if (sidePad > 0) addView(View(this@SpeakEasyIme), LinearLayout.LayoutParams(0, 1, sidePad))
+            views.forEach { addView(it) }
+            if (sidePad > 0) addView(View(this@SpeakEasyIme), LinearLayout.LayoutParams(0, 1, sidePad))
+        }
+
+    private fun buildKeys() {
+        val area = keysArea ?: return
+        area.removeAllViews()
+        letterKeys.clear()
+        shiftKey = null
+        val special = getColor(R.color.key_special)
+
+        if (!symbols) {
+            area.addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
+            area.addView(row(*"asdfghjkl".map { letter(it) }.toTypedArray(), sidePad = 0.5f))
+            val sh = key("⇧", 1.5f) { onShift() }.apply { background = rounded(special) }
+            shiftKey = sh
+            area.addView(row(sh, *"zxcvbnm".map { letter(it) }.toTypedArray(), backspaceKey()))
+        } else {
+            area.addView(row(*"1234567890".map { char(it.toString()) }.toTypedArray()))
+            area.addView(row(*listOf("@", "#", "$", "&", "-", "+", "(", ")", "/").map { char(it) }.toTypedArray(),
+                sidePad = 0.5f))
+            area.addView(row(*listOf("=", "*", "\"", "'", ":", ";", "!", "?").map { punct(it) }.toTypedArray(),
+                backspaceKey()))
+        }
+
+        val toggle = key(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
+            symbols = !symbols; buildKeys(); render()
+        }.apply { background = rounded(special) }
+        val space = key("space", 5f, textSize = 15f) { onSpace() }
+        val enter = key("⏎", 1.5f) { enter() }.apply { background = rounded(special) }
+        area.addView(row(toggle, punct(","), space, punct("."), enter))
+    }
+
+    private fun letter(c: Char): TextView = key(c.toString(), 1f) {
+        val upper = shift != Shift.OFF
+        commit(if (upper) c.uppercase() else c.toString())
+        if (shift == Shift.ONCE) { shift = Shift.OFF; render() }
+    }.also { letterKeys.add(it) }
+
+    private fun char(s: String): TextView = key(s, 1f) { commit(s) }
+
+    /** . , ? ! etc: no space before, one space after (like phone keyboards). */
+    private fun punct(s: String): TextView = key(s, 1f) {
+        val ic = currentInputConnection ?: return@key
+        val autoSpace = s in listOf(".", ",", "?", "!", ":", ";")
+        if (autoSpace) {
+            if (ic.getTextBeforeCursor(1, 0)?.toString() == " ") ic.deleteSurroundingText(1, 0)
+            ic.commitText("$s ", 1)
+            if (s in listOf(".", "?", "!")) autoCaps()
+        } else ic.commitText(s, 1)
+    }
+
+    private fun backspaceKey(): TextView {
+        val k = key("⌫", 1.5f, onTap = null).apply { background = rounded(getColor(R.color.key_special)) }
+        val repeat = object : Runnable {
+            override fun run() {
+                sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+                main.postDelayed(this, 60)
+            }
+        }
+        k.setOnTouchListener { v, ev ->
+            when (ev.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.haptic()
+                    sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
+                    main.postDelayed(repeat, 400)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> main.removeCallbacks(repeat)
+            }
+            true
+        }
+        return k
+    }
+
+    private fun onShift() {
+        val now = System.currentTimeMillis()
+        shift = when {
+            shift == Shift.ONCE && now - lastShiftTap < 400 -> Shift.LOCK   // double tap = caps lock
+            shift == Shift.OFF -> Shift.ONCE
+            else -> Shift.OFF
+        }
+        lastShiftTap = now
         render()
-        return v
+    }
+
+    private fun onSpace() {
+        val ic = currentInputConnection ?: return
+        // A punctuation key already added the space: don't double it.
+        val before = ic.getTextBeforeCursor(2, 0)?.toString() ?: ""
+        if (before.length == 2 && before[1] == ' ' && before[0] in ".,?!:;") return
+        ic.commitText(" ", 1)
+    }
+
+    /** Turn on one-shot shift where the field expects a capital (start of a sentence). */
+    private fun autoCaps() {
+        val ic = currentInputConnection ?: return
+        val type = currentInputEditorInfo?.inputType ?: 0
+        if (shift != Shift.LOCK) {
+            shift = if (type != 0 && ic.getCursorCapsMode(type) != 0) Shift.ONCE else Shift.OFF
+            render()
+        }
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        symbols = false
+        buildKeys()
+        autoCaps()
         render()
     }
 
@@ -120,41 +294,59 @@ class SpeakEasyIme : InputMethodService() {
 
     private fun startRecording() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            setStatus("Microphone not allowed - opening SpeakEasy settings")
+            flash("Microphone not allowed - opening settings")
             openSettings()
             return
         }
         if (prefs.token.isBlank()) {
-            setStatus("No access token - opening SpeakEasy settings")
+            flash("No access token - opening settings")
             openSettings()
             return
         }
         try {
             recorder.start()
         } catch (e: Exception) {
-            setStatus("Couldn't start the mic: ${e.message}")
+            flash("Couldn't start the mic: ${e.message}")
             return
         }
         state = State.RECORDING
         heardSpeech = false
         quietSince = 0L
+        noiseFloor = 0.0
+        speechLevel = 0.0
         render()
-        main.post(meter)
+        main.postDelayed(meter, 100)
     }
 
     private val meter = object : Runnable {
         override fun run() {
             if (state != State.RECORDING) return
             val elapsed = recorder.elapsedMs
-            val amp = recorder.amplitude()
+            val amp = recorder.amplitude().toDouble()
             val now = System.currentTimeMillis()
-            if (amp >= speechLevel) { heardSpeech = true; quietSince = 0L }
-            else if (amp < quietLevel) { if (quietSince == 0L) quietSince = now }
-            else quietSince = 0L
+
+            if (amp > 0) {
+                // Noise floor: follows quiet readings down fast, creeps up slowly.
+                noiseFloor = when {
+                    noiseFloor == 0.0 -> amp
+                    amp < noiseFloor -> noiseFloor * 0.6 + amp * 0.4
+                    else -> noiseFloor * 1.01
+                }
+                val speechThreshold = maxOf(noiseFloor * 3, 300.0)
+                if (amp > speechThreshold && elapsed > 300) {
+                    heardSpeech = true
+                    speechLevel = if (speechLevel == 0.0) amp else speechLevel * 0.8 + amp * 0.2
+                    quietSince = 0L
+                } else {
+                    val quietThreshold = maxOf(noiseFloor * 2, speechLevel * 0.15)
+                    if (amp < quietThreshold) { if (quietSince == 0L) quietSince = now }
+                    else quietSince = 0L
+                }
+            }
 
             val secs = elapsed / 1000
             val label = if (brainDump) "Brain dump" else "Listening"
-            setStatus("%s  %d:%02d   (tap to finish)".format(label, secs / 60, secs % 60))
+            status?.text = "%s  %d:%02d · tap to finish".format(label, secs / 60, secs % 60)
 
             // Brain dumps have long thinking pauses: only stop on a tap.
             val pauseOver = !brainDump && prefs.autoStop && heardSpeech &&
@@ -169,13 +361,11 @@ class SpeakEasyIme : InputMethodService() {
         val ms = recorder.stop()
         if (ms < 400) {
             state = State.IDLE
-            render()
-            setStatus("Too short - tap and speak")
+            flash("Too short - tap and speak")
             return
         }
         state = State.BUSY
         render()
-        setStatus(if (brainDump) "Organising your thoughts…" else "Writing…")
 
         val info = currentInputEditorInfo
         val pkg = info?.packageName ?: ""
@@ -209,16 +399,22 @@ class SpeakEasyIme : InputMethodService() {
             }
             main.post {
                 state = State.IDLE
-                if (brainDump) brainDump = false
-                render()
+                if (brainDump) { brainDump = false; idleText = "Tap to talk" }
                 result.onSuccess { r ->
-                    if (r.text.isBlank()) setStatus("Didn't catch anything")
-                    else { insert(r.text); setStatus("Tap to talk") }
+                    if (r.text.isBlank()) flash("Didn't catch anything")
+                    else { insert(r.text); render() }
                 }.onFailure { e ->
-                    setStatus((e.message ?: "Network error") + " - saved in History to retry")
+                    flash((e.message ?: "Network error") + " - saved in History")
                 }
             }
         }
+    }
+
+    /** Show a message in the bar for a few seconds, then go back to "Tap to talk". */
+    private fun flash(msg: String) {
+        render()
+        status?.text = msg
+        main.postDelayed({ if (state == State.IDLE) render() }, 4000)
     }
 
     // ---- text editing ----------------------------------------------------
@@ -234,6 +430,7 @@ class SpeakEasyIme : InputMethodService() {
         val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
         val needsSpace = before.isNotEmpty() && !before.last().isWhitespace() && !text.first().isWhitespace()
         ic.commitText(if (needsSpace) " $text" else text, 1)
+        autoCaps()
     }
 
     private fun commit(s: String) { currentInputConnection?.commitText(s, 1) }
@@ -248,26 +445,7 @@ class SpeakEasyIme : InputMethodService() {
             ic.performEditorAction(action)
         } else {
             sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
-        }
-    }
-
-    private fun setupBackspace(button: Button) {
-        val repeat = object : Runnable {
-            override fun run() {
-                sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
-                main.postDelayed(this, 60)
-            }
-        }
-        button.setOnTouchListener { v, ev ->
-            when (ev.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    v.haptic()
-                    sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
-                    main.postDelayed(repeat, 400)
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> main.removeCallbacks(repeat)
-            }
-            true
+            autoCaps()
         }
     }
 
@@ -280,21 +458,31 @@ class SpeakEasyIme : InputMethodService() {
     // ---- UI --------------------------------------------------------------
 
     private fun render() {
-        val m = mic ?: return
+        val bar = micBar ?: return
         val color = when {
             state == State.RECORDING -> R.color.mic_rec
             state == State.BUSY -> R.color.mic_busy
             brainDump -> R.color.mic_dump
             else -> R.color.mic_idle
         }
-        m.backgroundTintList = ColorStateList.valueOf(getColor(color))
-        m.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
-        m.isEnabled = state != State.BUSY
-        brain?.backgroundTintList = if (brainDump) ColorStateList.valueOf(getColor(R.color.key_on)) else null
-        if (state == State.IDLE && status?.text.isNullOrBlank()) setStatus("Tap to talk")
-    }
+        bar.background = rounded(getColor(color), 23)
+        micIcon?.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
+        bar.isEnabled = state != State.BUSY
+        when (state) {
+            State.IDLE -> status?.text = idleText
+            State.BUSY -> status?.text = if (brainDump) "Organising your thoughts…" else "Writing…"
+            State.RECORDING -> Unit  // the meter updates it
+        }
+        dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
 
-    private fun setStatus(s: String) { status?.text = s }
+        val upper = shift != Shift.OFF
+        letterKeys.forEach { k -> k.text = if (upper) k.text.toString().uppercase() else k.text.toString().lowercase() }
+        shiftKey?.apply {
+            text = if (shift == Shift.LOCK) "⇪" else "⇧"
+            background = rounded(getColor(if (shift != Shift.OFF) R.color.key_on else R.color.key_special))
+            setTypeface(null, if (shift != Shift.OFF) Typeface.BOLD else Typeface.NORMAL)
+        }
+    }
 
     private fun openSettings() {
         startActivity(Intent(this, SettingsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
