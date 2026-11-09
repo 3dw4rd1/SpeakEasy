@@ -20,7 +20,8 @@ import java.util.concurrent.TimeUnit
  */
 class Updater(private val context: Context) {
 
-    data class Release(val code: Long, val name: String, val notes: String, val apkUrl: String)
+    data class Release(val code: Long, val name: String, val notes: String, val apkUrl: String,
+                       val apiUrl: String = "")
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -55,7 +56,7 @@ class Updater(private val context: Context) {
                 val a = assets.getJSONObject(i)
                 if (a.optString("name").endsWith(".apk")) {
                     return Release(code, tag.removePrefix("v"), o.optString("body"),
-                        a.optString("browser_download_url"))
+                        a.optString("browser_download_url"), a.optString("url"))
                 }
             }
             return null
@@ -68,9 +69,31 @@ class Updater(private val context: Context) {
     @Throws(IOException::class)
     fun install(r: Release, progress: (Int) -> Unit) {
         val apk = File(context.cacheDir, "update.apk")
-        val req = Request.Builder().url(r.apkUrl).header("User-Agent", "SpeakEasy-app").build()
+        // GitHub's API asset route first (its plain download links have had 504 outages),
+        // then the plain link. Each one is tried twice before giving up.
+        val sources = listOfNotNull(
+            r.apiUrl.takeIf { it.isNotEmpty() }?.let {
+                Request.Builder().url(it).header("Accept", "application/octet-stream")
+            },
+            Request.Builder().url(r.apkUrl),
+        ).flatMap { listOf(it, it) }.map { it.header("User-Agent", "SpeakEasy-app").build() }
+
+        var lastError = "no download source"
+        val ok = sources.any { req ->
+            try {
+                download(req, apk, progress); true
+            } catch (e: IOException) {
+                lastError = e.message ?: "network error"; false
+            }
+        }
+        if (!ok) throw IOException("Download failed ($lastError). Try again in a few minutes")
+        commitInstall(apk)
+    }
+
+    @Throws(IOException::class)
+    private fun download(req: Request, apk: File, progress: (Int) -> Unit) {
         client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) throw IOException("Download failed (${resp.code})")
+            if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
             val body = resp.body ?: throw IOException("Empty download")
             val total = body.contentLength()
             body.byteStream().use { input ->
@@ -87,7 +110,9 @@ class Updater(private val context: Context) {
                 }
             }
         }
+    }
 
+    private fun commitInstall(apk: File) {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         val sessionId = installer.createSession(params)
