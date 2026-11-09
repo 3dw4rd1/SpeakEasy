@@ -8,6 +8,7 @@
     <color name="key_text">#F2EFE6</color>       <!-- cream -->
     <color name="key_special">#2A4A3E</color>
     <color name="key_on">#52705F</color>         <!-- pine-soft: shift, Dump when on -->
+    <color name="key_pressed">#3E5F51</color>    <!-- a key under your finger -->
     <color name="mic_idle">#DCF14F</color>       <!-- lime: "Tap to talk" -->
     <color name="on_lime">#12291F</color>        <!-- text/icons on lime -->
     <color name="mic_rec">#D9534A</color>

@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
+import android.graphics.drawable.StateListDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -67,6 +68,11 @@ class SpeakEasyIme : InputMethodService() {
     private var shiftKey: TextView? = null
     private var settingsKey: TextView? = null
     private var updateAvailable = false
+    // What is on screen now, so redraws can skip anything that has not changed.
+    private var barColor = 0
+    private var dumpShown: Boolean? = null
+    private var lettersUpper: Boolean? = null
+    private var shiftShown: Shift? = null
     // Looked up once: asking the package manager on every redraw costs a system call each time.
     private val installedCode by lazy { Updater(this).currentCode }
 
@@ -112,6 +118,13 @@ class SpeakEasyIme : InputMethodService() {
     // ---- layout ------------------------------------------------------------
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun dpf(v: Float) = (v * resources.displayMetrics.density).toInt()
+
+    // Layout sizes, in one place. The row height is the tap target; the inset is the visible gap.
+    private val rowH by lazy { dp(52) }
+    private val gapX by lazy { dpf(2.5f) }
+    private val gapY by lazy { dp(4) }
+    private val barH by lazy { dp(42) }
 
     private fun rounded(color: Int, radius: Int = 8) = GradientDrawable().apply {
         setColor(color); cornerRadius = dp(radius).toFloat()
@@ -119,22 +132,28 @@ class SpeakEasyIme : InputMethodService() {
 
     /**
      * Key background: the rounded key is drawn inset inside its cell, so the gaps you see
-     * between keys still belong to a key. No dead spots between keys (like Samsung's keyboard).
+     * between keys still belong to a key (no dead spots, like Samsung's keyboard). It lights up
+     * the instant a finger lands, so typing feels immediate.
      */
-    private fun keyBg(color: Int) = InsetDrawable(rounded(color), dp(3), dp(4), dp(3), dp(4))
+    private fun keyBg(color: Int) = StateListDrawable().apply {
+        setExitFadeDuration(90)
+        addState(intArrayOf(android.R.attr.state_pressed),
+            InsetDrawable(rounded(getColor(R.color.key_pressed), 7), gapX, gapY, gapX, gapY))
+        addState(intArrayOf(), InsetDrawable(rounded(color, 7), gapX, gapY, gapX, gapY))
+    }
 
     override fun onCreateInputView(): View {
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(getColor(R.color.kb_bg))
-            setPadding(dp(4), dp(6), dp(4), dp(8))
+            setPadding(dp(3), dp(4), dp(3), dp(6))
         }
         r.addView(toolbar())
         strip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        r.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)))
+        r.addView(strip, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(36)))
         keysArea = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         r.addView(keysArea)
         root = r
@@ -144,17 +163,19 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     private fun toolbar(): View {
+        barColor = 0          // new views: let render() paint them from scratch
+        dumpShown = null
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(2))
+            setPadding(dp(2), 0, dp(2), dp(2))
         }
-        dumpKey = key("Dump", 0f, dp(64), textSize = 14f) {
+        dumpKey = key("Dump", 0f, dp(60), textSize = 14f) {
             if (state == State.IDLE) {
                 brainDump = !brainDump
                 render()
             }
-        }.also { it.layoutParams = LinearLayout.LayoutParams(dp(64), dp(46)).apply { marginEnd = dp(6) } }
+        }.also { it.layoutParams = LinearLayout.LayoutParams(dp(60), barH).apply { marginEnd = dp(6) } }
         bar.addView(dumpKey)
 
         val pill = LinearLayout(this).apply {
@@ -172,15 +193,11 @@ class SpeakEasyIme : InputMethodService() {
         }
         pill.addView(status)
         micBar = pill
-        bar.addView(pill, LinearLayout.LayoutParams(0, dp(46), 1f))
+        bar.addView(pill, LinearLayout.LayoutParams(0, barH, 1f))
 
-        val gear = key("⚙", 0f, dp(46), textSize = 20f) { openSettings() }
+        val gear = key("⚙", 0f, barH, textSize = 20f) { openSettings() }
         settingsKey = gear
-        bar.addView(gear, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(6) })
-
-        val switchKb = key("⌨", 0f, dp(46), textSize = 20f) { switchKeyboard() }
-            .apply { background = rounded(getColor(R.color.key_special)) }
-        bar.addView(switchKb, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
+        bar.addView(gear, LinearLayout.LayoutParams(barH, barH).apply { marginStart = dp(6) })
         return bar
     }
 
@@ -211,16 +228,24 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     /** A key: TextView on a rounded background. width 0 + weight, or fixed width with weight 0. */
-    private fun key(label: String, weight: Float, width: Int = 0, textSize: Float = 20f,
+    private fun key(label: String, weight: Float, width: Int = 0, textSize: Float = 22f,
                     onTap: (() -> Unit)?): TextView = TextView(this).apply {
         text = label
         this.textSize = textSize
         gravity = Gravity.CENTER
+        includeFontPadding = false
+        isSoundEffectsEnabled = false   // haptics only; no click sound on every key
         setTextColor(getColor(R.color.key_text))
         background = keyBg(getColor(R.color.key_bg))
-        layoutParams = LinearLayout.LayoutParams(width, dp(56), weight)
+        layoutParams = LinearLayout.LayoutParams(width, rowH, weight)
         if (onTap != null) setOnClickListener { it.haptic(); onTap() }
     }
+
+    /** A function key (shift, ⌫, ?123, ⏎…): darker, slightly smaller label. */
+    private fun specialKey(label: String, weight: Float, textSize: Float = 19f, onTap: (() -> Unit)?) =
+        key(label, weight, textSize = textSize, onTap = onTap).apply {
+            background = keyBg(getColor(R.color.key_special))
+        }
 
     /**
      * A row of keys. sidePad indents the row (the a–l row is half a key in), and taps in that
@@ -232,9 +257,9 @@ class SpeakEasyIme : InputMethodService() {
             fun edge(target: View) = View(this@SpeakEasyIme).apply {
                 setOnClickListener { target.performClick() }
             }
-            if (sidePad > 0) addView(edge(views.first()), LinearLayout.LayoutParams(0, dp(56), sidePad))
+            if (sidePad > 0) addView(edge(views.first()), LinearLayout.LayoutParams(0, rowH, sidePad))
             views.forEach { addView(it) }
-            if (sidePad > 0) addView(edge(views.last()), LinearLayout.LayoutParams(0, dp(56), sidePad))
+            if (sidePad > 0) addView(edge(views.last()), LinearLayout.LayoutParams(0, rowH, sidePad))
         }
 
     private fun buildKeys() {
@@ -242,14 +267,15 @@ class SpeakEasyIme : InputMethodService() {
         area.removeAllViews()
         letterKeys.clear()
         shiftKey = null
-        val special = getColor(R.color.key_special)
+        lettersUpper = null   // new keys: let renderShift() set their case and shift look
+        shiftShown = null
 
         if (emojiMode) { buildEmoji(area); return }
 
         if (!symbols) {
             area.addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
             area.addView(row(*"asdfghjkl".map { letter(it) }.toTypedArray(), sidePad = 0.5f))
-            val sh = key("⇧", 1.5f) { onShift() }.apply { background = keyBg(special) }
+            val sh = specialKey("⇧", 1.5f) { onShift() }
             shiftKey = sh
             area.addView(row(sh, *"zxcvbnm".map { letter(it) }.toTypedArray(), backspaceKey()))
         } else {
@@ -260,17 +286,26 @@ class SpeakEasyIme : InputMethodService() {
                 backspaceKey()))
         }
 
-        val toggle = key(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
-            symbols = !symbols; buildKeys(); render()
-        }.apply { background = keyBg(special) }
-        val emoji = key("😊", 1f) {
+        val toggle = specialKey(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
+            symbols = !symbols; buildKeys(); renderShift()
+        }
+        val emoji = specialKey("😊", 1f) {
             emojiMode = true
             emojiTab = if (recentEmoji().isNotEmpty()) 0 else 1   // open on Recent once it has emojis
             buildKeys()
-        }.apply { background = keyBg(special) }
-        val space = key("space", 4f, textSize = 15f) { onSpace() }
-        val enter = key("⏎", 1.5f) { enter() }.apply { background = keyBg(special) }
-        area.addView(row(toggle, emoji, punct(","), space, punct("."), enter))
+        }
+        area.addView(row(toggle, emoji, punct(","), spaceKey(4f), punct("."), specialKey("⏎", 1.5f) { enter() }))
+        renderShift()
+    }
+
+    /** Space bar. Hold it to switch to another keyboard (replaces the old ⌨ button). */
+    private fun spaceKey(weight: Float) = key("space", weight, textSize = 14f) { onSpace() }.apply {
+        setTextColor(getColor(R.color.status))
+        setOnLongClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+            true
+        }
     }
 
     // ---- emoji panel -------------------------------------------------------
@@ -358,7 +393,7 @@ class SpeakEasyIme : InputMethodService() {
         val upper = shift != Shift.OFF
         // ß has no single-letter capital in Kotlin ("SS"), so it stays as it is.
         commit(if (upper && s.uppercase().length == s.length) s.uppercase() else s)
-        if (shift == Shift.ONCE) { shift = Shift.OFF; render() }
+        if (shift == Shift.ONCE) { shift = Shift.OFF; renderShift() }
     }
 
     // ---- accents (hold a letter) ---------------------------------------------
@@ -491,12 +526,11 @@ class SpeakEasyIme : InputMethodService() {
     /** . , ? ! etc: autocorrect the word, no space before, one space after. */
     private fun punct(s: String): TextView = key(s, 1f) {
         val ic = currentInputConnection ?: return@key
-        val autoSpace = s in listOf(".", ",", "?", "!", ":", ";")
-        if (autoSpace) {
+        if (s in AUTO_SPACE) {
             if (!finishWord()) lastAutocorrect = null
             if (ic.getTextBeforeCursor(1, 0)?.toString() == " ") ic.deleteSurroundingText(1, 0)
             ic.commitText("$s ", 1)
-            if (s in listOf(".", "?", "!")) autoCaps()
+            if (s in SENTENCE_END) autoCaps()
         } else {
             lastAutocorrect = null
             ic.commitText(s, 1)
@@ -504,7 +538,7 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     private fun backspaceKey(): TextView {
-        val k = key("⌫", 1.5f, onTap = null).apply { background = keyBg(getColor(R.color.key_special)) }
+        val k = specialKey("⌫", 1.5f, onTap = null)
         val repeat = object : Runnable {
             override fun run() {
                 sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
@@ -514,6 +548,7 @@ class SpeakEasyIme : InputMethodService() {
         k.setOnTouchListener { v, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true   // the touch is consumed here, so light the key up ourselves
                     v.haptic()
                     // Backspace straight after an autocorrect puts back what you typed.
                     if (!revertAutocorrect()) {
@@ -521,7 +556,10 @@ class SpeakEasyIme : InputMethodService() {
                         main.postDelayed(repeat, 400)
                     }
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> main.removeCallbacks(repeat)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false
+                    main.removeCallbacks(repeat)
+                }
             }
             true
         }
@@ -536,7 +574,7 @@ class SpeakEasyIme : InputMethodService() {
             else -> Shift.OFF
         }
         lastShiftTap = now
-        render()
+        renderShift()
     }
 
     private fun onSpace() {
@@ -554,7 +592,7 @@ class SpeakEasyIme : InputMethodService() {
         val type = currentInputEditorInfo?.inputType ?: 0
         if (shift != Shift.LOCK) {
             shift = if (type != 0 && ic.getCursorCapsMode(type) != 0) Shift.ONCE else Shift.OFF
-            render()
+            renderShift()
         }
     }
 
@@ -563,12 +601,19 @@ class SpeakEasyIme : InputMethodService() {
     /** The word right before the cursor ("" if the cursor follows a space or punctuation). */
     private fun currentWord(): String {
         val before = currentInputConnection?.getTextBeforeCursor(48, 0)?.toString() ?: return ""
-        return Regex("[\\p{L}\\p{N}'’-]+$").find(before)?.value ?: ""
+        return WORD_AT_END.find(before)?.value ?: ""
+    }
+
+    // Suggestions are looked up once typing pauses for a moment, not on every keystroke:
+    // each lookup reads the text back from the app, which is slow while you're typing fast.
+    private val refreshNow = Runnable {
+        if (!suggestionsOn || hasSelection || emojiMode) showSuggestions("", emptyList())
+        else assist.update(currentWord())
     }
 
     private fun refreshWord() {
-        if (!suggestionsOn || hasSelection || emojiMode) { showSuggestions("", emptyList()); return }
-        assist.update(currentWord())
+        main.removeCallbacks(refreshNow)
+        main.postDelayed(refreshNow, 40)
     }
 
     /** Autocorrect the word before the cursor if it's an obvious typo. Returns true if it did. */
@@ -933,11 +978,6 @@ class SpeakEasyIme : InputMethodService() {
         }
     }
 
-    private fun switchKeyboard() {
-        if (!switchToPreviousInputMethod()) {
-            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
-        }
-    }
 
     // ---- UI --------------------------------------------------------------
 
@@ -950,11 +990,14 @@ class SpeakEasyIme : InputMethodService() {
             brainDump || editing -> R.color.mic_dump
             else -> R.color.mic_idle
         }
-        bar.background = rounded(getColor(color), 23)
-        // Dark text on the lime "Tap to talk"; white on the red/green/amber states.
-        val fg = getColor(if (color == R.color.mic_idle) R.color.on_lime else R.color.key_text)
-        status?.setTextColor(fg)
-        micIcon?.setColorFilter(fg)
+        if (color != barColor) {   // only rebuild the bar's look when its colour actually changes
+            barColor = color
+            bar.background = rounded(getColor(color), 21)
+            // Dark text on the lime "Tap to talk"; cream on the red/green/amber states.
+            val fg = getColor(if (color == R.color.mic_idle) R.color.on_lime else R.color.key_text)
+            status?.setTextColor(fg)
+            micIcon?.setColorFilter(fg)
+        }
         micIcon?.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
         bar.isEnabled = state != State.BUSY
         idleText = when {
@@ -972,22 +1015,51 @@ class SpeakEasyIme : InputMethodService() {
             }
             State.RECORDING -> Unit  // the meter updates it
         }
-        dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
-        updateAvailable = sp().getLong("latest_code", 0) > installedCode
-        settingsKey?.apply {
-            // A dot on the gear when a new version is out; tapping it opens Settings → Update.
-            text = if (updateAvailable) "⚙•" else "⚙"
-            background = rounded(getColor(if (updateAvailable) R.color.mic_idle else R.color.key_special))
-            setTextColor(getColor(if (updateAvailable) R.color.on_lime else R.color.key_text))
+        if (brainDump != dumpShown) {
+            dumpShown = brainDump
+            dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
         }
+        val update = sp().getLong("latest_code", 0) > installedCode
+        if (update != updateAvailable || settingsKey?.tag == null) {
+            updateAvailable = update
+            settingsKey?.apply {
+                tag = true
+                // A dot on the gear when a new version is out; tapping it opens Settings → Update.
+                text = if (update) "⚙•" else "⚙"
+                background = rounded(getColor(if (update) R.color.mic_idle else R.color.key_special))
+                setTextColor(getColor(if (update) R.color.on_lime else R.color.key_text))
+            }
+        }
+        renderShift()
+    }
 
+    /**
+     * Letter case and the shift key only. Called on every capital letter, so it touches the
+     * 26 letter keys only when the case actually flips, and nothing else on the keyboard.
+     */
+    private fun renderShift() {
         val upper = shift != Shift.OFF
-        letterKeys.forEach { k -> k.text = if (upper) k.text.toString().uppercase() else k.text.toString().lowercase() }
-        shiftKey?.apply {
-            text = if (shift == Shift.LOCK) "⇪" else "⇧"
-            background = keyBg(getColor(if (shift != Shift.OFF) R.color.key_on else R.color.key_special))
-            setTypeface(null, if (shift != Shift.OFF) Typeface.BOLD else Typeface.NORMAL)
+        if (upper != lettersUpper) {
+            lettersUpper = upper
+            letterKeys.forEach { k ->
+                val t = k.text.toString()
+                k.text = if (upper) t.uppercase() else t.lowercase()
+            }
         }
+        if (shift != shiftShown) {
+            shiftShown = shift
+            shiftKey?.apply {
+                text = if (shift == Shift.LOCK) "⇪" else "⇧"
+                background = keyBg(getColor(if (shift != Shift.OFF) R.color.key_on else R.color.key_special))
+                setTypeface(null, if (shift != Shift.OFF) Typeface.BOLD else Typeface.NORMAL)
+            }
+        }
+    }
+
+    companion object {
+        private val WORD_AT_END = Regex("[\\p{L}\\p{N}'’-]+$")
+        private val AUTO_SPACE = setOf(".", ",", "?", "!", ":", ";")
+        private val SENTENCE_END = setOf(".", "?", "!")
     }
 
     private fun openSettings() {
