@@ -52,8 +52,9 @@ STYLES = {
     "formal": "Formal: complete sentences, proper capitalisation and punctuation, no slang.",
     "casual": "Casual: proper capitalisation and punctuation, but keep contractions and the "
               "speaker's relaxed phrasing.",
-    "very_casual": "Very casual: like a quick text. Lowercase sentence starts are fine, light "
-                   "punctuation, no full stop at the end of a short message.",
+    "very_casual": "Very casual: like a quick text. Lowercase sentence starts are fine and no "
+                   "full stop at the end of a message, but keep question marks, exclamation "
+                   "marks and the commas that aid reading.",
 }
 
 CATEGORY_NOTES = {
@@ -140,7 +141,8 @@ def speaker_blocks(terms: list[str], replacements: list[tuple[str, str]],
     if terms:
         parts.append(
             "Speaker's dictionary. Spell these exactly like this. The transcript may have "
-            "misheard them as similar-sounding words, so fix those when context fits:\n"
+            "misheard them as similar-sounding words, so fix those when context fits. Only "
+            "swap in a term that sounds like what was transcribed; never an unrelated one:\n"
             + ", ".join(terms))
     if replacements:
         parts.append("Known mishearings (heard -> meant):\n"
@@ -172,9 +174,12 @@ def dictation_system(category: str, style: str, terms, replacements, snippets) -
         "- Apply self-corrections: 'Tuesday, no sorry, Wednesday' becomes 'Wednesday'.\n"
         "- Fix words the speech recogniser obviously misheard, using context and the dictionary. "
         "The speaker has a New Zealand accent, so short 'e' vowels can come through as 'i' "
-        "(e.g. 'pin' for 'pen', 'bit' for 'bet', 'chick' for 'check').\n"
+        "(e.g. 'pin' for 'pen', 'bit' for 'bet', 'chick' for 'check'). Only change a word "
+        "when you're confident: if no dictionary term sounds like it, keep the transcript's word "
+        "(or the obvious ordinary word). Never invent a name or product.\n"
         "- Add punctuation, capitalisation and paragraph breaks.\n"
-        "- Use Australian/New Zealand English spelling (colour, organise, metre, tyre).\n"
+        "- Use New Zealand English, never US English: spelling (colour, organise, centre, metre, "
+        "tyre, cheque, programme, travelled, mum) and words (torch, petrol, footpath).\n"
         "- Spoken formatting commands ('new paragraph', 'new line', 'bullet point', 'full stop', "
         "'comma', 'question mark') become the formatting, not words.\n"
         "- If the speaker lists several items, a short bulleted list is fine.\n"
@@ -204,7 +209,8 @@ def braindump_system(terms, replacements, snippets) -> list[dict]:
         "- Use the speaker's own words where you can. Don't invent, advise or add conclusions.\n"
         "- End with an 'Actions' list ('- [ ] ...') of every to-do or follow-up mentioned, "
         "with who and when if he said so. Leave it out if there are none.\n"
-        "- Fix obvious mishearings using the dictionary. Australian/NZ spelling.\n"
+        "- Fix obvious mishearings using the dictionary, but never invent names. New Zealand "
+        "English spelling, never US.\n"
         "- Plain text with simple markdown only. Output only the note."
     )
     return to_system([rules] + speaker_blocks(terms, replacements, snippets), [])
