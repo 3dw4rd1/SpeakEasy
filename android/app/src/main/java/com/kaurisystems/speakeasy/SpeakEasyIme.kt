@@ -224,7 +224,11 @@ class SpeakEasyIme : InputMethodService() {
         val toggle = key(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
             symbols = !symbols; buildKeys(); render()
         }.apply { background = keyBg(special) }
-        val emoji = key("😊", 1f) { emojiMode = true; buildKeys() }.apply { background = keyBg(special) }
+        val emoji = key("😊", 1f) {
+            emojiMode = true
+            emojiTab = if (recentEmoji().isNotEmpty()) 0 else 1   // open on Recent once it has emojis
+            buildKeys()
+        }.apply { background = keyBg(special) }
         val space = key("space", 4f, textSize = 15f) { onSpace() }
         val enter = key("⏎", 1.5f) { enter() }.apply { background = keyBg(special) }
         area.addView(row(toggle, emoji, punct(","), space, punct("."), enter))
@@ -237,7 +241,7 @@ class SpeakEasyIme : InputMethodService() {
             .split(" ").filter { it.isNotBlank() }
 
     private fun addRecent(e: String) {
-        val list = (listOf(e) + recentEmoji().filter { it != e }).take(24)
+        val list = (listOf(e) + recentEmoji().filter { it != e }).take(36)
         getSharedPreferences("speakeasy", MODE_PRIVATE).edit()
             .putString("emoji_recent", list.joinToString(" ")).apply()
     }
@@ -245,7 +249,7 @@ class SpeakEasyIme : InputMethodService() {
     /** Same height as the letter keys: category tabs, a scrolling grid, then ABC / space / ⌫. */
     private fun buildEmoji(area: LinearLayout) {
         val recent = recentEmoji()
-        val tabs = (if (recent.isNotEmpty()) listOf("🕘" to recent) else emptyList()) + Emoji.categories
+        val tabs = listOf("🕘" to recent) + Emoji.categories   // Recent is always the first tab
         if (emojiTab >= tabs.size) emojiTab = 0
 
         val tabRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -283,7 +287,14 @@ class SpeakEasyIme : InputMethodService() {
                 addRecent(items[p])
             }
         }
-        area.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(124)))
+        if (items.isEmpty()) {
+            area.addView(TextView(this).apply {
+                text = "Emojis you use will appear here"; textSize = 14f; gravity = Gravity.CENTER
+                setTextColor(getColor(R.color.status))
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(124)))
+        } else {
+            area.addView(grid, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(124)))
+        }
 
         val special = getColor(R.color.key_special)
         val abc = key("ABC", 1.5f, textSize = 15f) { emojiMode = false; symbols = false; buildKeys(); render() }
