@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Lets History show app names ("Outlook") instead of package ids. -->
     <queries>
@@ -29,6 +30,11 @@
         </activity>
 
         <activity android:name=".HistoryActivity" android:exported="false" />
+        <activity
+            android:name=".ReportActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+        <receiver android:name=".UpdateReceiver" android:exported="false" />
         <activity
             android:name=".EditorActivity"
             android:exported="false"

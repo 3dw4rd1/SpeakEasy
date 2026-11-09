@@ -54,7 +54,9 @@ jobs:
             echo "::warning::No signing key secret - built with debug key, not publishing a release."
             exit 0
           fi
+          # The commit message becomes the "what's new" text in the app's update dialog.
+          git log -1 --pretty=%B | grep -v '^Co-Authored-By' > notes.txt
           gh release create "v1.0.${{ github.run_number }}" SpeakEasy.apk \
             --title "SpeakEasy 1.0.${{ github.run_number }}" \
-            --notes "Built from ${{ github.sha }}. Install on the phone from the APK below." \
+            --notes-file notes.txt \
             --latest

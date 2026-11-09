@@ -433,6 +433,49 @@ async def correction(payload: dict = Body(...), authorization: str | None = Head
     return {"learned": learned}
 
 
+@app.post("/v1/feedback")
+async def feedback(payload: dict = Body(...), authorization: str | None = Header(None)) -> dict:
+    """A bug report or improvement idea from the app. Reviewed with the /speakeasy-review skill.
+
+    Reports are append-only in feedback.jsonl; their status lives in feedback-status.json
+    ({id: {"status": "open|planned|fixed|wontfix", "note": ..., "version": ...}}).
+    """
+    check_auth(authorization)
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="empty report")
+    entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else None
+    report_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    append_jsonl("feedback.jsonl", {
+        "id": report_id,
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "kind": "idea" if payload.get("kind") == "idea" else "bug",
+        "text": text[:5000],
+        "entry": entry,
+        "app_version": str(payload.get("app_version", ""))[:40],
+        "device": str(payload.get("device", ""))[:80],
+    })
+    log.info("feedback %s saved", report_id)
+    return {"id": report_id}
+
+
+@app.get("/v1/feedback")
+async def feedback_list(authorization: str | None = Header(None)) -> dict:
+    check_auth(authorization)
+    try:
+        status = json.loads(read_text("feedback-status.json") or "{}")
+    except json.JSONDecodeError:
+        status = {}
+    reports = []
+    for r in reversed(read_jsonl("feedback.jsonl", 100)):
+        s = status.get(r.get("id"), {})
+        reports.append({
+            "id": r.get("id"), "at": r.get("at"), "kind": r.get("kind"), "text": r.get("text"),
+            "status": s.get("status", "open"), "note": s.get("note", ""), "version": s.get("version", ""),
+        })
+    return {"reports": reports}
+
+
 def data_endpoint(path: str, filename: str) -> None:
     @app.get(path)
     async def get_file(authorization: str | None = Header(None)) -> dict:

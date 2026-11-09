@@ -99,7 +99,7 @@ class HistoryActivity : Activity() {
                 if (fixed.isNotEmpty() && fixed != e.text) sendCorrection(e, fixed)
             }
             .setNeutralButton("Copy") { _, _ -> copy(edit.text.toString()) }
-            .setNegativeButton("Close", null)
+            .setNegativeButton("Report problem") { _, _ -> startActivity(ReportActivity.forEntry(this, e)) }
             .show()
     }
 

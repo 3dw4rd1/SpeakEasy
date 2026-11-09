@@ -212,6 +212,31 @@ class Api(private val prefs: Prefs) {
         val arr = call(request("/v1/correction").post(body).build()).optJSONArray("learned") ?: JSONArray()
         return (0 until arr.length()).map { arr.getString(it) }
     }
+
+    /** Send a bug report or idea. Returns the report id. */
+    @Throws(IOException::class)
+    fun sendFeedback(kind: String, text: String, entry: HistoryEntry?, appVersion: String): String {
+        val o = JSONObject().put("kind", kind).put("text", text).put("app_version", appVersion)
+            .put("device", "${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE})")
+        if (entry != null) {
+            o.put("entry", JSONObject().put("raw", entry.raw).put("text", entry.text)
+                .put("app", entry.app).put("mode", entry.mode).put("at", entry.at))
+        }
+        return call(request("/v1/feedback").post(o.toString().toRequestBody(json)).build()).optString("id")
+    }
+
+    data class Report(val at: String, val kind: String, val text: String, val status: String,
+                      val note: String, val version: String)
+
+    @Throws(IOException::class)
+    fun reports(): List<Report> {
+        val arr = call(request("/v1/feedback").build()).optJSONArray("reports") ?: JSONArray()
+        return (0 until arr.length()).map {
+            val r = arr.getJSONObject(it)
+            Report(r.optString("at"), r.optString("kind"), r.optString("text"), r.optString("status"),
+                r.optString("note"), r.optString("version"))
+        }
+    }
 }
 
 data class HistoryEntry(

@@ -2,6 +2,7 @@ package com.kaurisystems.speakeasy
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +11,7 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.net.Uri
 import android.provider.Settings
 import android.text.InputType
 import android.view.View
@@ -20,6 +22,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import java.util.concurrent.Executors
 
 /** Small helpers for building screens in code (no AndroidX, no XML per screen). */
@@ -53,22 +56,94 @@ class SettingsActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var steps: TextView
     private lateinit var result: TextView
+    private lateinit var updateStatus: TextView
+    private lateinit var updateButton: Button
+    private lateinit var updater: Updater
+    private var release: Updater.Release? = null
+    private var checkedForUpdate = false
+    private var installing = false
+    private var wantsInstall = false
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+
+    // ---- self-update -------------------------------------------------------
+
+    private fun checkForUpdate() {
+        updateStatus.text = "Version ${updater.currentName} · checking for updates…"
+        worker.execute {
+            val r = runCatching { updater.latest() }
+            main.post {
+                r.onSuccess { rel ->
+                    if (rel != null && rel.code > updater.currentCode) {
+                        release = rel
+                        updateStatus.text = "Version ${updater.currentName} · update ${rel.name} available"
+                        updateButton.text = "Update to ${rel.name}"
+                        updateButton.visibility = View.VISIBLE
+                    } else {
+                        updateStatus.text = "Version ${updater.currentName} · up to date"
+                        updateButton.visibility = View.GONE
+                    }
+                }.onFailure {
+                    updateStatus.text = "Version ${updater.currentName} · couldn't check for updates"
+                }
+            }
+        }
+    }
+
+    private fun promptUpdate() {
+        val rel = release ?: return
+        AlertDialog.Builder(this)
+            .setTitle("SpeakEasy ${rel.name}")
+            .setMessage(rel.notes.ifBlank { "A new version is ready." })
+            .setPositiveButton("Install") { _, _ -> installUpdate(rel) }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    private fun installUpdate(rel: Updater.Release) {
+        if (installing) return
+        if (!updater.canInstall()) {
+            // One-off: Android needs SpeakEasy to be allowed to install apps.
+            wantsInstall = true
+            Toast.makeText(this, "Allow SpeakEasy to install updates, then press back", Toast.LENGTH_LONG).show()
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        installing = true
+        updateButton.isEnabled = false
+        updateStatus.text = "Downloading ${rel.name}…"
+        worker.execute {
+            val r = runCatching {
+                updater.install(rel) { pct -> main.post { updateStatus.text = "Downloading ${rel.name}… $pct%" } }
+            }
+            main.post {
+                installing = false
+                updateButton.isEnabled = true
+                updateStatus.text = r.fold({ "Confirm the install on the next screen" },
+                                           { "Update failed: ${it.message}" })
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
+        updater = Updater(this)
 
         screen {
             addView(TextView(this@SettingsActivity).apply { text = "SpeakEasy"; textSize = 26f })
             steps = note("")
             addView(steps)
+            updateStatus = note("")
+            addView(updateStatus)
+            updateButton = button("Update") { promptUpdate() }.apply { visibility = View.GONE }
+            addView(updateButton)
 
             addView(heading("Your stuff"))
             addView(button("History") { open(HistoryActivity::class.java) })
             addView(button("Dictionary") { openEditor(EditorActivity.DICTIONARY) })
             addView(button("Snippets") { openEditor(EditorActivity.SNIPPETS) })
+            addView(button("Report a bug or idea") { open(ReportActivity::class.java) })
 
             addView(heading("Style"))
             addView(note("How polished the text is, by the kind of app you're typing in."))
@@ -176,6 +251,15 @@ class SettingsActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshSteps()
+        val rel = release
+        if (wantsInstall && rel != null && updater.canInstall()) {
+            // Back from granting "install unknown apps": carry on with the update.
+            wantsInstall = false
+            installUpdate(rel)
+        } else if (!checkedForUpdate) {
+            checkedForUpdate = true
+            checkForUpdate()
+        }
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, grants: IntArray) {
