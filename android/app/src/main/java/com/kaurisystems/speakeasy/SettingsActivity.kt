@@ -2,6 +2,7 @@ package com.kaurisystems.speakeasy
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -11,15 +12,43 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.view.inputmethod.InputMethodManager
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import java.util.concurrent.Executors
 
-/** One-screen setup: mic permission, enable + pick the keyboard, server token, test box. */
+/** Small helpers for building screens in code (no AndroidX, no XML per screen). */
+fun Activity.dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+fun Activity.heading(t: String) = TextView(this).apply {
+    text = t; textSize = 18f; setPadding(0, dp(20), 0, dp(4))
+}
+
+fun Activity.note(t: String) = TextView(this).apply {
+    text = t; textSize = 14f; alpha = 0.75f; setPadding(0, dp(2), 0, dp(6))
+}
+
+fun Activity.button(t: String, onClick: () -> Unit) = Button(this).apply {
+    text = t; isAllCaps = false; setOnClickListener { onClick() }
+}
+
+fun Activity.screen(build: LinearLayout.() -> Unit): LinearLayout {
+    val col = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(16), dp(16), dp(32))
+        build()
+    }
+    setContentView(ScrollView(this).apply { addView(col) })
+    return col
+}
+
+/** Home screen: setup, styles, and links to Dictionary / Snippets / History. */
 class SettingsActivity : Activity() {
 
     private lateinit var prefs: Prefs
@@ -31,74 +60,97 @@ class SettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = Prefs(this)
-        val pad = (16 * resources.displayMetrics.density).toInt()
 
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+        screen {
+            addView(TextView(this@SettingsActivity).apply { text = "SpeakEasy"; textSize = 26f })
+            steps = note("")
+            addView(steps)
+
+            addView(heading("Your stuff"))
+            addView(button("History") { open(HistoryActivity::class.java) })
+            addView(button("Dictionary") { openEditor(EditorActivity.DICTIONARY) })
+            addView(button("Snippets") { openEditor(EditorActivity.SNIPPETS) })
+
+            addView(heading("Style"))
+            addView(note("How polished the text is, by the kind of app you're typing in."))
+            for (c in Category.values()) addView(styleRow(c))
+
+            addView(heading("Options"))
+            addView(CheckBox(this@SettingsActivity).apply {
+                text = "Stop automatically when I pause (one tap to dictate)"
+                isChecked = prefs.autoStop
+                setOnCheckedChangeListener { _, on -> prefs.autoStop = on }
+            })
+            addView(CheckBox(this@SettingsActivity).apply {
+                text = "Use the text already in the field for context (better names and continuations)"
+                isChecked = prefs.sendContext
+                setOnCheckedChangeListener { _, on -> prefs.sendContext = on }
+            })
+
+            addView(heading("Setup"))
+            addView(button("1. Allow microphone") {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+            })
+            addView(button("2. Turn on the SpeakEasy keyboard") {
+                startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+            })
+            addView(button("3. Switch to SpeakEasy now") {
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
+            })
+
+            addView(note("Server"))
+            val server = EditText(this@SettingsActivity).apply {
+                setText(prefs.server); inputType = InputType.TYPE_TEXT_VARIATION_URI; isSingleLine = true
+            }
+            addView(server)
+            addView(note("Access token"))
+            val token = EditText(this@SettingsActivity).apply {
+                setText(prefs.token)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                isSingleLine = true
+                hint = "paste token"
+            }
+            addView(token)
+            result = note("")
+            addView(button("Save and test connection") {
+                prefs.server = server.text.toString().ifBlank { DEFAULT_SERVER }
+                prefs.token = token.text.toString()
+                server.setText(prefs.server)
+                testConnection()
+            })
+            addView(result)
+
+            addView(heading("Try it here"))
+            addView(EditText(this@SettingsActivity).apply {
+                hint = "Tap here, switch to SpeakEasy, tap the mic"
+                minLines = 4
+            })
         }
-        fun label(t: String, size: Float = 15f) = TextView(this).apply {
-            text = t; textSize = size; setPadding(0, pad, 0, pad / 3)
-        }
-        fun button(t: String, onClick: () -> Unit) = Button(this).apply {
-            text = t; isAllCaps = false; setOnClickListener { onClick() }
-        }
-
-        col.addView(label("SpeakEasy", 24f))
-        steps = label("")
-        col.addView(steps)
-
-        col.addView(button("1. Allow microphone") {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
-        })
-        col.addView(button("2. Turn on the SpeakEasy keyboard") {
-            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
-        })
-        col.addView(button("3. Switch to SpeakEasy now") {
-            (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
-        })
-
-        col.addView(label("Server"))
-        val server = EditText(this).apply {
-            setText(prefs.server)
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            isSingleLine = true
-        }
-        col.addView(server)
-
-        col.addView(label("Access token (SPEAKEASY_TOKEN from the server .env)"))
-        val token = EditText(this).apply {
-            setText(prefs.token)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-            isSingleLine = true
-            hint = "paste token"
-        }
-        col.addView(token)
-
-        val autoStop = CheckBox(this).apply {
-            text = "Stop automatically when I pause (one tap to dictate)"
-            isChecked = prefs.autoStop
-            setOnCheckedChangeListener { _, on -> prefs.autoStop = on }
-        }
-        col.addView(autoStop)
-
-        result = label("")
-        col.addView(button("Save and test connection") {
-            prefs.server = server.text.toString().ifBlank { DEFAULT_SERVER }
-            prefs.token = token.text.toString()
-            server.setText(prefs.server)
-            testConnection()
-        })
-        col.addView(result)
-
-        col.addView(label("Try it here"))
-        col.addView(EditText(this).apply {
-            hint = "Tap here, switch to SpeakEasy, tap the mic"
-            minLines = 4
-        })
-
-        setContentView(ScrollView(this).apply { addView(col) })
     }
+
+    private fun styleRow(c: Category): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(TextView(this).apply {
+            text = c.label; textSize = 15f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, STYLE_LABELS)
+        spinner.setSelection(STYLE_KEYS.indexOf(prefs.style(c)).coerceAtLeast(0))
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                prefs.setStyle(c, STYLE_KEYS[pos])
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        row.addView(spinner)
+        return row
+    }
+
+    private fun open(cls: Class<*>) = startActivity(Intent(this, cls))
+
+    private fun openEditor(kind: String) =
+        startActivity(Intent(this, EditorActivity::class.java).putExtra(EditorActivity.KIND, kind))
 
     override fun onResume() {
         super.onResume()
@@ -117,13 +169,11 @@ class SettingsActivity : Activity() {
 
     private fun refreshSteps() {
         val micOk = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         val enabled = imm.enabledInputMethodList.any { it.packageName == packageName }
         val tokenOk = prefs.token.isNotBlank()
         fun tick(ok: Boolean) = if (ok) "✓" else "✗"
-        steps.text = "${tick(micOk)} Microphone allowed\n" +
-            "${tick(enabled)} Keyboard turned on\n" +
-            "${tick(tokenOk)} Access token saved"
+        steps.text = "${tick(micOk)} Microphone allowed   ${tick(enabled)} Keyboard on   ${tick(tokenOk)} Token saved"
     }
 
     private fun testConnection() {
@@ -131,11 +181,7 @@ class SettingsActivity : Activity() {
         result.text = "Testing…"
         val api = Api(prefs)
         worker.execute {
-            val msg = try {
-                api.check()
-            } catch (e: Exception) {
-                "Can't reach server: ${e.message}"
-            }
+            val msg = try { api.check() } catch (e: Exception) { "Can't reach server: ${e.message}" }
             main.post { result.text = msg }
         }
     }

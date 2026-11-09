@@ -1,0 +1,5 @@
+my email
+someone@example.com
+---
+booking link
+https://example.com/book

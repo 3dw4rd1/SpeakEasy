@@ -8,12 +8,48 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 const val DEFAULT_SERVER = "https://speakeasy.kauri-systems.com"
+
+/** App categories for per-context styles, like Wispr Flow. */
+enum class Category(val key: String, val label: String) {
+    EMAIL("email", "Email"),
+    WORK("work", "Work messages"),
+    PERSONAL("personal", "Personal messages"),
+    OTHER("other", "Everything else");
+
+    companion object {
+        private val EMAIL_APPS = listOf(
+            "com.microsoft.office.outlook", "com.google.android.gm",
+            "com.samsung.android.email", "ch.protonmail", "com.yahoo.mobile.client.android.mail",
+        )
+        private val WORK_APPS = listOf(
+            "com.microsoft.teams", "com.Slack", "com.pipedrive", "com.linkedin.android",
+            "com.google.android.apps.dynamite", "com.asana", "com.trello", "com.notion",
+        )
+        private val PERSONAL_APPS = listOf(
+            "com.whatsapp", "com.facebook.orca", "org.telegram", "com.google.android.apps.messaging",
+            "com.samsung.android.messaging", "com.instagram.android", "org.thoughtcrime.securesms",
+            "com.snapchat.android", "com.discord",
+        )
+
+        fun of(pkg: String): Category = when {
+            EMAIL_APPS.any { pkg.startsWith(it) } -> EMAIL
+            WORK_APPS.any { pkg.startsWith(it) } -> WORK
+            PERSONAL_APPS.any { pkg.startsWith(it) } -> PERSONAL
+            else -> OTHER
+        }
+    }
+}
+
+val STYLE_KEYS = listOf("formal", "casual", "very_casual")
+val STYLE_LABELS = listOf("Formal", "Casual", "Very casual")
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("speakeasy", Context.MODE_PRIVATE)
@@ -30,6 +66,20 @@ class Prefs(context: Context) {
     var autoStop: Boolean
         get() = sp.getBoolean("auto_stop", true)
         set(v) = sp.edit().putBoolean("auto_stop", v).apply()
+
+    /** Send the text already in the field so names and sentence continuations come out right. */
+    var sendContext: Boolean
+        get() = sp.getBoolean("send_context", true)
+        set(v) = sp.edit().putBoolean("send_context", v).apply()
+
+    fun style(c: Category): String = sp.getString("style_" + c.key, defaultStyle(c)) ?: defaultStyle(c)
+    fun setStyle(c: Category, s: String) = sp.edit().putString("style_" + c.key, s).apply()
+
+    private fun defaultStyle(c: Category) = when (c) {
+        Category.EMAIL -> "formal"
+        Category.PERSONAL -> "very_casual"
+        else -> "casual"
+    }
 }
 
 /** AAC/M4A recorder: small uploads, and Whisper reads it directly. */
@@ -77,45 +127,143 @@ class Recorder(private val context: Context) {
     fun cancel() { stop(); file.delete() }
 }
 
+data class DictationRequest(
+    val audio: File,
+    val durationMs: Long,
+    val app: String,
+    val category: Category,
+    val style: String,
+    val mode: String,          // "dictate" or "braindump"
+    val context: String,
+    val hint: String,
+)
+
+data class DictationResult(val text: String, val raw: String)
+
 class Api(private val prefs: Prefs) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(90, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
         .build()
+    private val json = "application/json".toMediaType()
 
-    /** Blocking; call off the main thread. Returns cleaned text (may be empty). */
-    @Throws(IOException::class)
-    fun dictate(audio: File, durationMs: Long, appPackage: String): String {
-        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-            .addFormDataPart("audio", "dictation.m4a", audio.asRequestBody("audio/mp4".toMediaType()))
-            .addFormDataPart("app", appPackage)
-            .addFormDataPart("duration_ms", durationMs.toString())
-            .build()
-        val req = Request.Builder()
-            .url(prefs.server + "/v1/dictate")
-            .header("Authorization", "Bearer " + prefs.token)
-            .post(body)
-            .build()
+    private fun request(path: String) = Request.Builder()
+        .url(prefs.server + path)
+        .header("Authorization", "Bearer " + prefs.token)
+
+    private fun call(req: Request): JSONObject {
         client.newCall(req).execute().use { resp ->
-            val text = resp.body?.string() ?: ""
+            val body = resp.body?.string() ?: ""
             if (resp.code == 401) throw IOException("Server rejected the access token - check Settings")
             if (!resp.isSuccessful) throw IOException("Server error ${resp.code}")
-            return JSONObject(text).optString("text", "")
+            return JSONObject(body)
         }
+    }
+
+    /** Blocking; call off the main thread. */
+    @Throws(IOException::class)
+    fun dictate(r: DictationRequest): DictationResult {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("audio", "dictation.m4a", r.audio.asRequestBody("audio/mp4".toMediaType()))
+            .addFormDataPart("app", r.app)
+            .addFormDataPart("category", r.category.key)
+            .addFormDataPart("style", r.style)
+            .addFormDataPart("mode", r.mode)
+            .addFormDataPart("context", r.context)
+            .addFormDataPart("hint", r.hint)
+            .addFormDataPart("duration_ms", r.durationMs.toString())
+            .build()
+        val o = call(request("/v1/dictate").post(body).build())
+        return DictationResult(o.optString("text", ""), o.optString("raw", ""))
     }
 
     /** Checks the server is reachable and accepts the token. Returns a message for the user. */
     @Throws(IOException::class)
     fun check(): String {
-        val req = Request.Builder().url(prefs.server + "/v1/check")
-            .header("Authorization", "Bearer " + prefs.token).build()
-        client.newCall(req).execute().use {
+        client.newCall(request("/v1/check").build()).execute().use {
             return when {
                 it.isSuccessful -> "Connected ✓ token accepted"
                 it.code == 401 -> "Server reachable, but the token is wrong"
                 else -> "Server error ${it.code}"
             }
         }
+    }
+
+    @Throws(IOException::class)
+    fun getText(path: String): String = call(request(path).build()).optString("text", "")
+
+    @Throws(IOException::class)
+    fun putText(path: String, text: String) {
+        val body = JSONObject().put("text", text).toString().toRequestBody(json)
+        call(request(path).put(body).build())
+    }
+
+    /** Send a hand-corrected output. Returns the dictionary entries the server learned. */
+    @Throws(IOException::class)
+    fun correction(raw: String, text: String, corrected: String, app: String): List<String> {
+        val body = JSONObject().put("raw", raw).put("text", text)
+            .put("corrected", corrected).put("app", app).toString().toRequestBody(json)
+        val arr = call(request("/v1/correction").post(body).build()).optJSONArray("learned") ?: JSONArray()
+        return (0 until arr.length()).map { arr.getString(it) }
+    }
+}
+
+data class HistoryEntry(
+    val at: Long,
+    val app: String,
+    val mode: String,
+    val raw: String,
+    val text: String,
+    val error: String = "",
+    val audioPath: String = "",   // kept only for failed dictations so they can be retried
+    val durationMs: Long = 0,
+) {
+    fun toJson(): JSONObject = JSONObject().put("at", at).put("app", app).put("mode", mode)
+        .put("raw", raw).put("text", text).put("error", error).put("audio", audioPath)
+        .put("duration_ms", durationMs)
+
+    companion object {
+        fun fromJson(o: JSONObject) = HistoryEntry(
+            o.optLong("at"), o.optString("app"), o.optString("mode", "dictate"),
+            o.optString("raw"), o.optString("text"), o.optString("error"),
+            o.optString("audio"), o.optLong("duration_ms"),
+        )
+    }
+}
+
+/** On-phone history of dictations (newest first), capped. */
+class History(context: Context) {
+    private val file = File(context.filesDir, "history.json")
+    val audioDir = File(context.filesDir, "failed-audio").apply { mkdirs() }
+
+    @Synchronized
+    fun all(): List<HistoryEntry> = try {
+        val arr = JSONArray(file.readText())
+        (0 until arr.length()).map { HistoryEntry.fromJson(arr.getJSONObject(it)) }
+    } catch (e: Exception) { emptyList() }
+
+    @Synchronized
+    fun add(e: HistoryEntry) = save(listOf(e) + all())
+
+    @Synchronized
+    fun replace(old: HistoryEntry, new: HistoryEntry) = save(all().map { if (it == old) new else it })
+
+    @Synchronized
+    fun clear() {
+        save(emptyList())
+        audioDir.listFiles()?.forEach { it.delete() }
+    }
+
+    private fun save(list: List<HistoryEntry>) {
+        val kept = list.take(500)
+        // Drop retry audio for entries that fell off the end.
+        val keepAudio = kept.map { it.audioPath }.toSet()
+        audioDir.listFiles()?.filter { it.absolutePath !in keepAudio }?.forEach { it.delete() }
+        val arr = JSONArray()
+        kept.forEach { arr.put(it.toJson()) }
+        val tmp = File(file.parentFile, "history.tmp")
+        tmp.writeText(arr.toString())
+        tmp.renameTo(file)
     }
 }

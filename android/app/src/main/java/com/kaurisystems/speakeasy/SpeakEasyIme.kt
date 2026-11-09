@@ -1,6 +1,8 @@
 package com.kaurisystems.speakeasy
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
@@ -16,11 +18,14 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.TextView
+import java.io.File
 import java.util.concurrent.Executors
 
 /**
  * Voice keyboard. One tap on the mic starts recording; it stops on a second tap or,
  * with auto-stop on, after a pause in speech. The cleaned text is typed at the cursor.
+ * "Dump" switches to brain-dump mode: ramble as long as you like, tap to finish, and an
+ * organised note is inserted.
  */
 class SpeakEasyIme : InputMethodService() {
 
@@ -31,16 +36,19 @@ class SpeakEasyIme : InputMethodService() {
     private lateinit var prefs: Prefs
     private lateinit var api: Api
     private lateinit var recorder: Recorder
+    private lateinit var history: History
 
     private var status: TextView? = null
     private var mic: ImageButton? = null
+    private var brain: Button? = null
     private var state = State.IDLE
+    private var brainDump = false
 
     // Auto-stop: once speech is heard, stop after this much quiet.
     private val silenceMs = 2500L
     private val speechLevel = 2200
     private val quietLevel = 1300
-    private val maxRecordMs = 5 * 60 * 1000L
+    private val maxRecordMs = 10 * 60 * 1000L
     private var heardSpeech = false
     private var quietSince = 0L
 
@@ -49,14 +57,24 @@ class SpeakEasyIme : InputMethodService() {
         prefs = Prefs(this)
         api = Api(prefs)
         recorder = Recorder(this)
+        history = History(this)
     }
 
     override fun onCreateInputView(): View {
         val v = layoutInflater.inflate(R.layout.keyboard, null)
         status = v.findViewById(R.id.status)
         mic = v.findViewById(R.id.mic)
+        brain = v.findViewById(R.id.brain)
 
         mic!!.setOnClickListener { it.haptic(); toggle() }
+        brain!!.setOnClickListener {
+            it.haptic()
+            if (state == State.IDLE) {
+                brainDump = !brainDump
+                setStatus(if (brainDump) "Brain dump: tap the mic, ramble, tap again to finish" else "Tap to talk")
+                render()
+            }
+        }
         v.findViewById<Button>(R.id.switch_kb).setOnClickListener { switchKeyboard() }
         v.findViewById<Button>(R.id.space).setOnClickListener { commit(" ") }
         v.findViewById<Button>(R.id.comma).setOnClickListener { commit(",") }
@@ -73,11 +91,13 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
-        // Keyboard hidden mid-recording: throw the audio away rather than type into a stale field.
+        // Keyboard hidden mid-recording: don't lose a brain dump; drop a short dictation.
         if (state == State.RECORDING) {
-            recorder.cancel()
-            main.removeCallbacks(meter)
-            state = State.IDLE
+            if (brainDump) stopAndSend() else {
+                recorder.cancel()
+                main.removeCallbacks(meter)
+                state = State.IDLE
+            }
         }
         super.onFinishInputView(finishingInput)
     }
@@ -133,9 +153,12 @@ class SpeakEasyIme : InputMethodService() {
             else quietSince = 0L
 
             val secs = elapsed / 1000
-            setStatus("Listening  %d:%02d   (tap to finish)".format(secs / 60, secs % 60))
+            val label = if (brainDump) "Brain dump" else "Listening"
+            setStatus("%s  %d:%02d   (tap to finish)".format(label, secs / 60, secs % 60))
 
-            val pauseOver = prefs.autoStop && heardSpeech && quietSince != 0L && now - quietSince >= silenceMs
+            // Brain dumps have long thinking pauses: only stop on a tap.
+            val pauseOver = !brainDump && prefs.autoStop && heardSpeech &&
+                quietSince != 0L && now - quietSince >= silenceMs
             if (pauseOver || elapsed >= maxRecordMs) { stopAndSend(); return }
             main.postDelayed(this, 100)
         }
@@ -152,20 +175,47 @@ class SpeakEasyIme : InputMethodService() {
         }
         state = State.BUSY
         render()
-        setStatus("Writing…")
-        val pkg = currentInputEditorInfo?.packageName ?: ""
-        val audio = recorder.file
+        setStatus(if (brainDump) "Organising your thoughts…" else "Writing…")
+
+        val info = currentInputEditorInfo
+        val pkg = info?.packageName ?: ""
+        val category = Category.of(pkg)
+        val mode = if (brainDump) "braindump" else "dictate"
+        val context = if (prefs.sendContext) {
+            currentInputConnection?.getTextBeforeCursor(1500, 0)?.toString() ?: ""
+        } else ""
+        // Move the audio out of the cache slot so the next recording can't overwrite it.
+        val audio = File(cacheDir, "sending-${System.currentTimeMillis()}.m4a")
+        recorder.file.renameTo(audio)
+        val req = DictationRequest(
+            audio = audio, durationMs = ms, app = pkg, category = category,
+            style = prefs.style(category), mode = mode, context = context,
+            hint = info?.hintText?.toString() ?: "",
+        )
+
         worker.execute {
-            val result = runCatching { api.dictate(audio, ms, pkg) }
-            audio.delete()
+            val result = runCatching { api.dictate(req) }
+            result.onSuccess { r ->
+                audio.delete()
+                if (r.text.isNotBlank()) {
+                    history.add(HistoryEntry(System.currentTimeMillis(), pkg, mode, r.raw, r.text, durationMs = ms))
+                }
+            }.onFailure { e ->
+                // Keep the audio so it can be retried from History.
+                val kept = File(history.audioDir, audio.name)
+                audio.renameTo(kept)
+                history.add(HistoryEntry(System.currentTimeMillis(), pkg, mode, "", "",
+                    error = e.message ?: "Network error", audioPath = kept.absolutePath, durationMs = ms))
+            }
             main.post {
                 state = State.IDLE
+                if (brainDump) brainDump = false
                 render()
-                result.onSuccess { text ->
-                    if (text.isBlank()) setStatus("Didn't catch anything")
-                    else { insert(text); setStatus("Tap to talk") }
+                result.onSuccess { r ->
+                    if (r.text.isBlank()) setStatus("Didn't catch anything")
+                    else { insert(r.text); setStatus("Tap to talk") }
                 }.onFailure { e ->
-                    setStatus(e.message ?: "Network error")
+                    setStatus((e.message ?: "Network error") + " - saved in History to retry")
                 }
             }
         }
@@ -177,12 +227,12 @@ class SpeakEasyIme : InputMethodService() {
         val ic = currentInputConnection
         if (ic == null) {
             // Field went away while we were waiting: don't lose the dictation.
-            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("SpeakEasy", text))
+            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("SpeakEasy", text))
             return
         }
         val before = ic.getTextBeforeCursor(1, 0)?.toString() ?: ""
-        val needsSpace = before.isNotEmpty() && !before.last().isWhitespace()
+        val needsSpace = before.isNotEmpty() && !before.last().isWhitespace() && !text.first().isWhitespace()
         ic.commitText(if (needsSpace) " $text" else text, 1)
     }
 
@@ -231,14 +281,16 @@ class SpeakEasyIme : InputMethodService() {
 
     private fun render() {
         val m = mic ?: return
-        val color = when (state) {
-            State.IDLE -> R.color.mic_idle
-            State.RECORDING -> R.color.mic_rec
-            State.BUSY -> R.color.mic_busy
+        val color = when {
+            state == State.RECORDING -> R.color.mic_rec
+            state == State.BUSY -> R.color.mic_busy
+            brainDump -> R.color.mic_dump
+            else -> R.color.mic_idle
         }
         m.backgroundTintList = ColorStateList.valueOf(getColor(color))
         m.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
         m.isEnabled = state != State.BUSY
+        brain?.backgroundTintList = if (brainDump) ColorStateList.valueOf(getColor(R.color.key_on)) else null
         if (state == State.IDLE && status?.text.isNullOrBlank()) setStatus("Tap to talk")
     }
 

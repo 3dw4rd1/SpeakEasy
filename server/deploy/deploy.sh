@@ -8,7 +8,7 @@ docker rm -f speakeasy 2>/dev/null || true
 docker run -d --name speakeasy --restart unless-stopped \
   --network nginx-proxy-manager_default \
   --env-file /opt/speakeasy/.env \
-  -v /opt/speakeasy/data:/data:ro \
+  -v /opt/speakeasy/data:/data \
   --memory 200m \
   speakeasy
 sleep 3

@@ -30,6 +30,30 @@ Updates: download the new APK and install over the top (same signing key, settin
 - Say "new paragraph", "bullet point", "full stop" etc. for formatting.
 - Correct yourself out loud ("at 3, no, 4 o'clock") and it keeps the correction.
 
+## Features
+
+- **Styles** – Formal / Casual / Very casual per app type (Email, Work, Personal, Other),
+  set in the app. The app type comes from the app you're typing in.
+- **Dictionary** – words to always spell your way, plus `misheard -> Correct` rules.
+  Edited in the app, stored on the server (`data/vocab.txt`).
+- **Snippets** – say "insert my email" and the saved text goes in exactly. Edited in the app
+  (`data/snippets.txt`: trigger line, text, `---` between snippets).
+- **Brain dump** – tap *Dump*, then the mic, ramble for as long as you like, tap to finish:
+  you get an organised note with an Actions list (Claude Sonnet).
+- **History** – every dictation on the phone. Tap to copy; edit it and *Save correction*
+  to teach SpeakEasy; failed dictations keep their audio and can be retried.
+
+## How it gets more accurate
+
+1. Whisper large-v3 (not turbo), biased with your dictionary as a glossary.
+2. The cleanup model gets your profile (`data/about.txt`), dictionary, snippets, and the
+   text already in the field before the cursor.
+3. Every History correction is stored (`data/examples.jsonl`) and the latest 15 are shown to
+   the model as examples of what you wanted; new names/terms from it go into the dictionary.
+4. `misheard -> Correct` rules are applied word-for-word after cleanup as a final net.
+5. The server keeps `data/history.jsonl` (raw + cleaned) so recurring mistakes can be reviewed
+   and turned into dictionary rules. Turn off with `SAVE_HISTORY=0`.
+
 ## Server
 
 Runs as the `speakeasy` Docker container on the VPS, on the

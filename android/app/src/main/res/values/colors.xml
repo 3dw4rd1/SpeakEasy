@@ -6,5 +6,7 @@
     <color name="mic_idle">#2F6FEB</color>
     <color name="mic_rec">#E5484D</color>
     <color name="mic_busy">#5A5D66</color>
+    <color name="mic_dump">#8E4EC6</color>
+    <color name="key_on">#4B3A63</color>
     <color name="status">#A9ACB3</color>
 </resources>
