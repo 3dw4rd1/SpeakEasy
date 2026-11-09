@@ -74,3 +74,8 @@ Runs as the `speakeasy` Docker container on the VPS, on the
 
 API: `POST /v1/dictate` multipart `audio`, `app`, `duration_ms`, header
 `Authorization: Bearer <SPEAKEASY_TOKEN>` → `{"text", "raw", "ms"}`.
+
+## Credits
+
+Headings use Source Serif 4 by Adobe, under the SIL Open Font License 1.1
+(`android/app/src/main/assets/licenses/SourceSerif4-OFL.txt`, shipped inside the app).
