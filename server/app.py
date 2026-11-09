@@ -317,6 +317,25 @@ def apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
     return text
 
 
+def restore_capitals(raw: str, text: str, terms: list[str]) -> str:
+    """Put back capitals the cleanup dropped (very casual lowercases too eagerly).
+
+    Sources: words Whisper capitalised mid-sentence (names, places, acronyms), dictionary
+    terms, and the pronoun I. Only lowercase occurrences in the output are touched.
+    """
+    proper: dict[str, str] = {}
+    for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][\w'’-]*)", raw.strip()):
+        word = m.group(1)
+        if word not in ("I",) and not word.startswith(("I'", "I’")):
+            proper[word.lower()] = word
+    for t in terms:
+        if any(ch.isupper() for ch in t) and " " not in t:
+            proper[t.lower()] = t
+    for low, cased in proper.items():
+        text = re.sub(rf"(?<![\w@/.]){re.escape(low)}(?![\w@])", cased, text)
+    return re.sub(r"\bi(?=\b|'|’)(?!\.)", "I", text)
+
+
 def expand_snippets(text: str, snippets: list[tuple[str, str]]) -> str:
     def sub(m: re.Match) -> str:
         i = int(m.group(1)) - 1
@@ -371,7 +390,10 @@ async def dictate(
         text = await organise(raw, braindump_system(terms, replacements, snippets), user)
     else:
         text = await clean(raw, dictation_system(category, style, terms, replacements, snippets), user)
-    text = expand_snippets(apply_replacements(text, replacements), snippets)
+    text = apply_replacements(text, replacements)
+    if mode != "braindump" and style == "very_casual":
+        text = restore_capitals(raw, text, terms)
+    text = expand_snippets(text, snippets)
     t2 = time.monotonic()
 
     ms = {"stt": int((t1 - t0) * 1000), "clean": int((t2 - t1) * 1000)}
