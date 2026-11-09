@@ -37,6 +37,8 @@ Updates: download the new APK and install over the top (same signing key, settin
   set in the app. The app type comes from the app you're typing in.
 - **Dictionary** – words to always spell your way, plus `misheard -> Correct` rules.
   Edited in the app, stored on the server (`data/vocab.txt`).
+- **Kiwi slang** – a built-in list (`server/kiwi_slang.txt`: chur, sweet as, togs, whānau…)
+  so the cleanup keeps your slang instead of "fixing" it. Edit the file and redeploy to change it.
 - **Snippets** – say "insert my email" and the saved text goes in exactly. Edited in the app
   (`data/snippets.txt`: trigger line, text, `---` between snippets).
 - **Brain dump** – tap *Dump*, then the mic, ramble for as long as you like, tap to finish:

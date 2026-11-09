@@ -124,6 +124,27 @@ def parse_vocab() -> tuple[list[str], list[tuple[str, str]]]:
     return list(dict.fromkeys(terms)), replacements
 
 
+def load_slang() -> list[tuple[str, str]]:
+    """kiwi_slang.txt (baked into the image): 'term = meaning' per line. '#' starts a comment."""
+    try:
+        text = (Path(__file__).parent / "kiwi_slang.txt").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        term, _, meaning = (x.strip() for x in s.partition("="))
+        if term:
+            out.append((term, meaning))
+    return out
+
+
+SLANG = load_slang()   # fixed for the life of the container, unlike the personal dictionary
+SLANG_TERMS = [t for t, _ in SLANG]
+
+
 def parse_snippets() -> list[tuple[str, str]]:
     """snippets.txt: blocks separated by '---'. First line = trigger, rest = text."""
     out = []
@@ -148,6 +169,13 @@ def speaker_blocks(terms: list[str], replacements: list[tuple[str, str]],
             "misheard them as similar-sounding words, so fix those when context fits. Only "
             "swap in a term that sounds like what was transcribed; never an unrelated one:\n"
             + ", ".join(terms))
+    if SLANG:
+        parts.append(
+            "New Zealand slang the speaker may use. Keep it as spoken and spell it like this; "
+            "don't swap it for standard English or 'fix' it to a similar-sounding word "
+            "(e.g. 'chur' is not 'sure', 'togs' is not 'dogs'). Only use a term when it was "
+            "actually said:\n"
+            + "\n".join(f"{t} ({m})" if m else t for t, m in SLANG))
     if replacements:
         parts.append("Known mishearings (heard -> meant):\n"
                      + "\n".join(f"{a} -> {b}" for a, b in replacements))
@@ -275,6 +303,13 @@ def check_auth(authorization: str | None) -> None:
     supplied = (authorization or "").removeprefix("Bearer ").strip()
     if not supplied or not hmac.compare_digest(supplied, TOKEN):
         raise HTTPException(status_code=401, detail="bad token")
+
+
+def glossary(terms: list[str]) -> list[str]:
+    """Personal terms first, then slang: the Whisper prompt is cut at 850 chars, so the
+    speaker's own names always make it in and slang only fills whatever room is left."""
+    known = {t.lower() for t in terms}
+    return terms + [t for t in SLANG_TERMS if t.lower() not in known]
 
 
 async def transcribe(audio: bytes, filename: str, content_type: str, terms: list[str]) -> str:
@@ -430,7 +465,7 @@ async def dictate(
 
     t0 = time.monotonic()
     raw = await transcribe(data, audio.filename or "audio.m4a",
-                           audio.content_type or "audio/mp4", terms)
+                           audio.content_type or "audio/mp4", glossary(terms))
     t1 = time.monotonic()
     if raw.lower() in HALLUCINATIONS:
         return {"text": "", "raw": raw, "ms": {"stt": int((t1 - t0) * 1000)}}
@@ -483,7 +518,8 @@ async def correction(payload: dict = Body(...), authorization: str | None = Head
     })
 
     terms, replacements = parse_vocab()
-    known = {t.lower() for t in terms} | {a.lower() for a, _ in replacements}
+    known = ({t.lower() for t in terms} | {a.lower() for a, _ in replacements}
+             | {t.lower() for t in SLANG_TERMS})   # don't copy built-in slang into vocab.txt
     try:
         msg = await claude.messages.create(
             model=CLEANUP_MODEL,
