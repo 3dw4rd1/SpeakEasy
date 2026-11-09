@@ -22,6 +22,7 @@ from pathlib import Path
 import anthropic
 import httpx
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 log = logging.getLogger("speakeasy")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -383,6 +384,19 @@ def expand_snippets(text: str, snippets: list[tuple[str, str]]) -> str:
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/download/SpeakEasy.apk")
+async def download_apk():
+    """Mirror of the latest APK, for when GitHub's release downloads are down.
+
+    The app is public on GitHub anyway, so no auth. Updated by copying the APK into the data dir.
+    """
+    path = DATA_DIR / "SpeakEasy.apk"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="no mirrored APK")
+    return FileResponse(path, media_type="application/vnd.android.package-archive",
+                        filename="SpeakEasy.apk")
 
 
 @app.get("/v1/check")
