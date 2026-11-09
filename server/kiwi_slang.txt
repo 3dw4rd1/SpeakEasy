@@ -63,3 +63,28 @@ haere mai = welcome
 kūmara = sweet potato
 Pākehā = New Zealander of European descent
 Aotearoa = New Zealand
+
+# How speech recognition tends to mangle the slang ('heard -> meant'). These are hints for the
+# cleanup model, used only when the slang fits the context; they are never blanket replacements.
+ciao -> chur
+chow -> chur
+cha -> chur
+cheer bro -> chur bro
+sure bro -> chur bro
+chabro -> chur bro
+sweet ass -> sweet as
+sweetaz -> sweet as
+sweet azz -> sweet as
+swear to -> sweet as
+asboro -> as bro
+batch -> bach
+smoke oh -> smoko
+smoker -> smoko
+dogs -> togs
+jan dolls -> jandals
+chilli bin -> chilly bin
+chili bin -> chilly bin
+ka pie -> ka pai
+kia aura -> kia ora
+mar he -> mahi
+far nar -> whānau

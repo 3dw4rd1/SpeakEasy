@@ -124,25 +124,39 @@ def parse_vocab() -> tuple[list[str], list[tuple[str, str]]]:
     return list(dict.fromkeys(terms)), replacements
 
 
-def load_slang() -> list[tuple[str, str]]:
-    """kiwi_slang.txt (baked into the image): 'term = meaning' per line. '#' starts a comment."""
+def load_slang() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """kiwi_slang.txt (baked into the image). '#' starts a comment.
+
+    'term = meaning'  a slang word to keep as spoken.
+    'heard -> meant'  how speech recognition tends to mangle it (a hint, applied only in context).
+    """
     try:
         text = (Path(__file__).parent / "kiwi_slang.txt").read_text(encoding="utf-8")
     except FileNotFoundError:
-        return []
-    out = []
+        return [], []
+    slang, misheard = [], []
     for line in text.splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
             continue
+        if "->" in s:
+            heard, _, meant = (x.strip() for x in s.partition("->"))
+            if heard and meant:
+                misheard.append((heard, meant))
+            continue
         term, _, meaning = (x.strip() for x in s.partition("="))
         if term:
-            out.append((term, meaning))
-    return out
+            slang.append((term, meaning))
+    return slang, misheard
 
 
-SLANG = load_slang()   # fixed for the life of the container, unlike the personal dictionary
+SLANG, SLANG_MISHEARD = load_slang()   # fixed for the container's life, unlike vocab.txt
 SLANG_TERMS = [t for t, _ in SLANG]
+
+# Whisper reads its prompt as text that came just before the audio, so a natural Kiwi
+# sentence teaches it the spellings better than a list. Kept short and placed first, so the
+# 850-character cut can never drop it.
+KIWI_PRIMER = "Kia ora bro, chur. Sweet as, see you at the bach after smoko, eh."
 
 
 def parse_snippets() -> list[tuple[str, str]]:
@@ -176,6 +190,15 @@ def speaker_blocks(terms: list[str], replacements: list[tuple[str, str]],
             "(e.g. 'chur' is not 'sure', 'togs' is not 'dogs'). Only use a term when it was "
             "actually said:\n"
             + "\n".join(f"{t} ({m})" if m else t for t, m in SLANG))
+    if SLANG_MISHEARD:
+        parts.append(
+            "Speech recognition often mangles Kiwi slang into similar-sounding words. When one "
+            "of these appears and the slang reading fits the context better (a casual message, "
+            "next to 'bro', at the start of a reply), write the slang instead. Otherwise leave "
+            "it: a real 'batch' of products stays 'batch'. If a phrase is garbled and none of "
+            "these fit, keep the transcript's words; never substitute a different phrase "
+            "(e.g. never turn a garbled phrase into 'swear to God'):\n"
+            + "\n".join(f"{a} -> {b}" for a, b in SLANG_MISHEARD))
     if replacements:
         parts.append("Known mishearings (heard -> meant):\n"
                      + "\n".join(f"{a} -> {b}" for a, b in replacements))
@@ -306,16 +329,20 @@ def check_auth(authorization: str | None) -> None:
 
 
 def glossary(terms: list[str]) -> list[str]:
-    """Personal terms first, then slang: the Whisper prompt is cut at 850 chars, so the
-    speaker's own names always make it in and slang only fills whatever room is left."""
+    """Personal terms first, then slang, for whatever room the 850-char cut leaves."""
     known = {t.lower() for t in terms}
     return terms + [t for t in SLANG_TERMS if t.lower() not in known]
 
 
+def whisper_prompt(terms: list[str]) -> str:
+    # Whisper reads the prompt as preceding text and only looks at ~224 tokens, so keep it
+    # short: the Kiwi primer first (never cut), then the glossary.
+    head = KIWI_PRIMER + " " if SLANG else ""
+    return (head + "Glossary: " + ", ".join(terms))[:850] if terms else head.strip()
+
+
 async def transcribe(audio: bytes, filename: str, content_type: str, terms: list[str]) -> str:
-    # Whisper reads the prompt as preceding text: a glossary biases it towards these spellings.
-    # It only looks at the last ~224 tokens, so keep it short.
-    prompt = ("Glossary: " + ", ".join(terms))[:850] if terms else ""
+    prompt = whisper_prompt(terms)
     resp = await http.post(
         "https://api.groq.com/openai/v1/audio/transcriptions",
         headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
@@ -332,8 +359,9 @@ async def transcribe(audio: bytes, filename: str, content_type: str, terms: list
         log.error("groq %s: %s", resp.status_code, resp.text[:500])
         raise HTTPException(status_code=502, detail=f"transcription failed ({resp.status_code})")
     text = resp.json().get("text", "").strip()
-    # Whisper sometimes echoes the glossary back on near-silent audio.
-    return "" if text.startswith("Glossary:") else text
+    # Whisper sometimes echoes its prompt back on near-silent audio.
+    echoed = text.startswith("Glossary:") or (len(text) > 10 and text in prompt)
+    return "" if echoed else text
 
 
 def text_of(msg) -> str:
