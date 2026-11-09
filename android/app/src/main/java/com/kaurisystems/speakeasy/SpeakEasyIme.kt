@@ -67,6 +67,8 @@ class SpeakEasyIme : InputMethodService() {
     private var shiftKey: TextView? = null
     private var settingsKey: TextView? = null
     private var updateAvailable = false
+    // Looked up once: asking the package manager on every redraw costs a system call each time.
+    private val installedCode by lazy { Updater(this).currentCode }
 
     private var state = State.IDLE
     private var brainDump = false
@@ -81,6 +83,7 @@ class SpeakEasyIme : InputMethodService() {
     private var suggestionsOn = true
     private var autocorrectOn = true
     private var passwordField = false
+    private var privateField = false   // incognito tab etc.: dictation works, nothing is saved
     private var hasSelection = false
     private var editSelection: String? = null       // the selection being voice-edited
     private var lastAutocorrect: Pair<String, String>? = null   // typed -> corrected
@@ -276,6 +279,7 @@ class SpeakEasyIme : InputMethodService() {
         (sp().getString("emoji_recent", "") ?: "").split(" ").filter { it.isNotBlank() }
 
     private fun addRecent(e: String) {
+        if (privateField) return
         val list = (listOf(e) + recentEmoji().filter { it != e }).take(36)
         sp().edit().putString("emoji_recent", list.joinToString(" ")).apply()
     }
@@ -471,7 +475,9 @@ class SpeakEasyIme : InputMethodService() {
 
     private fun highlightAccent(row: AccentRow) {
         row.cells.forEachIndexed { i, cell ->
-            cell.background = if (i == row.selected) rounded(getColor(R.color.mic_idle), 8) else null
+            val on = i == row.selected
+            cell.background = if (on) rounded(getColor(R.color.mic_idle), 8) else null
+            cell.setTextColor(getColor(if (on) R.color.on_lime else R.color.key_text))
         }
     }
 
@@ -673,6 +679,8 @@ class SpeakEasyIme : InputMethodService() {
             InputType.TYPE_TEXT_VARIATION_PASSWORD, InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
             InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) ||
             (cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+        // Apps set this flag for incognito/private fields: the keyboard mustn't remember what's said.
+        privateField = ((info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
         val noSuggestions = (type and InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS) != 0
         val addressy = variation in listOf(InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS, InputType.TYPE_TEXT_VARIATION_URI)
@@ -829,16 +837,19 @@ class SpeakEasyIme : InputMethodService() {
             audio = audio, durationMs = ms, app = pkg, category = category,
             style = prefs.style(category), mode = mode, context = context,
             hint = info?.hintText?.toString() ?: "", selection = selection ?: "",
+            privateField = privateField,
         )
+        val saveHistory = !privateField
 
         worker.execute {
             val result = runCatching { api.dictate(req) }
             result.onSuccess { r ->
                 audio.delete()
-                if (r.text.isNotBlank()) {
+                if (saveHistory && r.text.isNotBlank()) {
                     history.add(HistoryEntry(System.currentTimeMillis(), pkg, mode, r.raw, r.text, durationMs = ms))
                 }
             }.onFailure { e ->
+                if (!saveHistory) { audio.delete(); return@onFailure }
                 // Keep the audio so it can be retried from History.
                 val kept = File(history.audioDir, audio.name)
                 audio.renameTo(kept)
@@ -856,7 +867,8 @@ class SpeakEasyIme : InputMethodService() {
                         else -> { insert(r.text); render() }
                     }
                 }.onFailure { e ->
-                    flash((e.message ?: "Network error") + " - saved in History")
+                    val where = if (saveHistory) " - saved in History" else ""
+                    flash((e.message ?: "Network error") + where)
                 }
             }
         }
@@ -939,6 +951,10 @@ class SpeakEasyIme : InputMethodService() {
             else -> R.color.mic_idle
         }
         bar.background = rounded(getColor(color), 23)
+        // Dark text on the lime "Tap to talk"; white on the red/green/amber states.
+        val fg = getColor(if (color == R.color.mic_idle) R.color.on_lime else R.color.key_text)
+        status?.setTextColor(fg)
+        micIcon?.setColorFilter(fg)
         micIcon?.setImageResource(if (state == State.RECORDING) R.drawable.ic_stop else R.drawable.ic_mic)
         bar.isEnabled = state != State.BUSY
         idleText = when {
@@ -957,11 +973,12 @@ class SpeakEasyIme : InputMethodService() {
             State.RECORDING -> Unit  // the meter updates it
         }
         dumpKey?.background = rounded(getColor(if (brainDump) R.color.key_on else R.color.key_special))
-        updateAvailable = sp().getLong("latest_code", 0) > Updater(this).currentCode
+        updateAvailable = sp().getLong("latest_code", 0) > installedCode
         settingsKey?.apply {
             // A dot on the gear when a new version is out; tapping it opens Settings → Update.
             text = if (updateAvailable) "⚙•" else "⚙"
             background = rounded(getColor(if (updateAvailable) R.color.mic_idle else R.color.key_special))
+            setTextColor(getColor(if (updateAvailable) R.color.on_lime else R.color.key_text))
         }
 
         val upper = shift != Shift.OFF

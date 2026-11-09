@@ -45,6 +45,8 @@ Updates: download the new APK and install over the top (same signing key, settin
   you get an organised note with an Actions list (Claude Sonnet).
 - **History** – every dictation on the phone. Tap to copy; edit it and *Save correction*
   to teach SpeakEasy; failed dictations keep their audio and can be retried.
+- **Private fields** – in incognito tabs (or any field an app marks as private) dictation still
+  works, but nothing is saved: no phone History, no server log, no recent emojis.
 
 ## How it gets more accurate
 
@@ -72,3 +74,8 @@ Runs as the `speakeasy` Docker container on the VPS, on the
 
 API: `POST /v1/dictate` multipart `audio`, `app`, `duration_ms`, header
 `Authorization: Bearer <SPEAKEASY_TOKEN>` → `{"text", "raw", "ms"}`.
+
+## Credits
+
+Headings use Source Serif 4 by Adobe, under the SIL Open Font License 1.1
+(`android/app/src/main/assets/licenses/SourceSerif4-OFL.txt`, shipped inside the app).
