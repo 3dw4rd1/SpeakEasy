@@ -5,6 +5,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,14 +14,11 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.view.inputmethod.InputMethodManager
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import java.util.concurrent.Executors
 
@@ -128,23 +127,45 @@ class SettingsActivity : Activity() {
         }
     }
 
+    /** App type label, a full-width segmented Formal | Casual | Very casual control, and an example. */
     private fun styleRow(c: Category): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(TextView(this).apply {
-            text = c.label; textSize = 15f
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        val spinner = Spinner(this)
-        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, STYLE_LABELS)
-        spinner.setSelection(STYLE_KEYS.indexOf(prefs.style(c)).coerceAtLeast(0))
-        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                prefs.setStyle(c, STYLE_KEYS[pos])
-            }
-            override fun onNothingSelected(p: AdapterView<*>?) {}
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(10), 0, dp(4))
         }
-        row.addView(spinner)
-        return row
+        block.addView(TextView(this).apply { text = c.label; textSize = 15f })
+
+        val example = TextView(this).apply { textSize = 13f; alpha = 0.65f; setPadding(dp(2), dp(2), 0, 0) }
+        val segments = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val buttons = STYLE_LABELS.mapIndexed { i, label ->
+            Button(this).apply {
+                text = label
+                isAllCaps = false
+                textSize = 13f
+                minWidth = 0
+                minimumWidth = 0
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    .apply { marginEnd = if (i < STYLE_LABELS.size - 1) dp(4) else 0 }
+            }
+        }
+        val normalText = buttons[0].textColors
+        fun select(key: String) {
+            prefs.setStyle(c, key)
+            buttons.forEachIndexed { i, b ->
+                val on = STYLE_KEYS[i] == key
+                b.backgroundTintList = if (on) ColorStateList.valueOf(getColor(R.color.mic_idle)) else null
+                if (on) b.setTextColor(Color.WHITE) else b.setTextColor(normalText)
+            }
+            example.text = STYLE_EXAMPLES[STYLE_KEYS.indexOf(key)]
+        }
+        buttons.forEachIndexed { i, b ->
+            b.setOnClickListener { select(STYLE_KEYS[i]) }
+            segments.addView(b)
+        }
+        block.addView(segments)
+        block.addView(example)
+        select(prefs.style(c))
+        return block
     }
 
     private fun open(cls: Class<*>) = startActivity(Intent(this, cls))

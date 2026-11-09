@@ -50,6 +50,11 @@ enum class Category(val key: String, val label: String) {
 
 val STYLE_KEYS = listOf("formal", "casual", "very_casual")
 val STYLE_LABELS = listOf("Formal", "Casual", "Very casual")
+val STYLE_EXAMPLES = listOf(
+    "Hi Mark, I will be there at 6:30. Cheers, Ed",
+    "Hey Mark, I'll be there at half 6.",
+    "hey mark ill be there half 6",
+)
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("speakeasy", Context.MODE_PRIVATE)
