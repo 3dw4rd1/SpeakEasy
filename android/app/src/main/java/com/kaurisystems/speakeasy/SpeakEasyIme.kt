@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.InsetDrawable
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.Looper
@@ -85,6 +86,12 @@ class SpeakEasyIme : InputMethodService() {
         setColor(color); cornerRadius = dp(radius).toFloat()
     }
 
+    /**
+     * Key background: the rounded key is drawn inset inside its cell, so the gaps you see
+     * between keys still belong to a key. No dead spots between keys (like Samsung's keyboard).
+     */
+    private fun keyBg(color: Int) = InsetDrawable(rounded(color), dp(3), dp(4), dp(3), dp(4))
+
     override fun onCreateInputView(): View {
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -137,6 +144,7 @@ class SpeakEasyIme : InputMethodService() {
         bar.addView(gear, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(6) })
 
         val switchKb = key("⌨", 0f, dp(46), textSize = 20f) { switchKeyboard() }
+            .apply { background = rounded(getColor(R.color.key_special)) }
         bar.addView(switchKb, LinearLayout.LayoutParams(dp(46), dp(46)).apply { marginStart = dp(4) })
         return bar
     }
@@ -164,19 +172,24 @@ class SpeakEasyIme : InputMethodService() {
         this.textSize = textSize
         gravity = Gravity.CENTER
         setTextColor(getColor(R.color.key_text))
-        background = rounded(getColor(R.color.key_bg))
-        layoutParams = LinearLayout.LayoutParams(width, dp(48), weight).apply {
-            setMargins(dp(3), dp(4), dp(3), dp(4))
-        }
+        background = keyBg(getColor(R.color.key_bg))
+        layoutParams = LinearLayout.LayoutParams(width, dp(56), weight)
         if (onTap != null) setOnClickListener { it.haptic(); onTap() }
     }
 
+    /**
+     * A row of keys. sidePad indents the row (the a–l row is half a key in), and taps in that
+     * indent go to the nearest key, so reaching for "a" at the edge still types "a".
+     */
     private fun row(vararg views: View, sidePad: Float = 0f): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            if (sidePad > 0) addView(View(this@SpeakEasyIme), LinearLayout.LayoutParams(0, 1, sidePad))
+            fun edge(target: View) = View(this@SpeakEasyIme).apply {
+                setOnClickListener { target.performClick() }
+            }
+            if (sidePad > 0) addView(edge(views.first()), LinearLayout.LayoutParams(0, dp(56), sidePad))
             views.forEach { addView(it) }
-            if (sidePad > 0) addView(View(this@SpeakEasyIme), LinearLayout.LayoutParams(0, 1, sidePad))
+            if (sidePad > 0) addView(edge(views.last()), LinearLayout.LayoutParams(0, dp(56), sidePad))
         }
 
     private fun buildKeys() {
@@ -189,7 +202,7 @@ class SpeakEasyIme : InputMethodService() {
         if (!symbols) {
             area.addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
             area.addView(row(*"asdfghjkl".map { letter(it) }.toTypedArray(), sidePad = 0.5f))
-            val sh = key("⇧", 1.5f) { onShift() }.apply { background = rounded(special) }
+            val sh = key("⇧", 1.5f) { onShift() }.apply { background = keyBg(special) }
             shiftKey = sh
             area.addView(row(sh, *"zxcvbnm".map { letter(it) }.toTypedArray(), backspaceKey()))
         } else {
@@ -202,9 +215,9 @@ class SpeakEasyIme : InputMethodService() {
 
         val toggle = key(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
             symbols = !symbols; buildKeys(); render()
-        }.apply { background = rounded(special) }
+        }.apply { background = keyBg(special) }
         val space = key("space", 5f, textSize = 15f) { onSpace() }
-        val enter = key("⏎", 1.5f) { enter() }.apply { background = rounded(special) }
+        val enter = key("⏎", 1.5f) { enter() }.apply { background = keyBg(special) }
         area.addView(row(toggle, punct(","), space, punct("."), enter))
     }
 
@@ -228,7 +241,7 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     private fun backspaceKey(): TextView {
-        val k = key("⌫", 1.5f, onTap = null).apply { background = rounded(getColor(R.color.key_special)) }
+        val k = key("⌫", 1.5f, onTap = null).apply { background = keyBg(getColor(R.color.key_special)) }
         val repeat = object : Runnable {
             override fun run() {
                 sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
@@ -509,7 +522,7 @@ class SpeakEasyIme : InputMethodService() {
         letterKeys.forEach { k -> k.text = if (upper) k.text.toString().uppercase() else k.text.toString().lowercase() }
         shiftKey?.apply {
             text = if (shift == Shift.LOCK) "⇪" else "⇧"
-            background = rounded(getColor(if (shift != Shift.OFF) R.color.key_on else R.color.key_special))
+            background = keyBg(getColor(if (shift != Shift.OFF) R.color.key_on else R.color.key_special))
             setTypeface(null, if (shift != Shift.OFF) Typeface.BOLD else Typeface.NORMAL)
         }
     }
