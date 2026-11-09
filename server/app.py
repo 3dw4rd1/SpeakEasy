@@ -55,7 +55,8 @@ STYLES = {
     "very_casual": "Very casual: like a quick text. Start sentences with a lowercase letter and "
                    "leave off the full stop at the end of a message, but keep question marks, "
                    "exclamation marks and the commas that aid reading. Names, places, brands, "
-                   "acronyms and the word 'I' keep their capitals (Matt, NZ, TCR, Jotun, I'm).",
+                   "acronyms and the word 'I' keep their capitals (Matt, NZ, TCR, Jotun). 'I', "
+                   "'I'm', 'I'll', 'I've' are always capitalised, even starting a sentence.",
 }
 
 CATEGORY_NOTES = {
