@@ -26,6 +26,7 @@ import android.widget.GridView
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.TextView
 import java.io.File
 import java.util.concurrent.Executors
@@ -338,13 +339,146 @@ class SpeakEasyIme : InputMethodService() {
 
     // ---- keys ----------------------------------------------------------------
 
-    private fun letter(c: Char): TextView = key(c.toString(), 1f) {
+    private fun letter(c: Char): TextView {
+        val k = key(c.toString(), 1f) { typeLetter(c.toString()) }
+        letterKeys.add(k)
+        val accents = Accents.forLetter(c)
+        if (accents.isNotEmpty()) holdForAccents(k, accents)
+        return k
+    }
+
+    /** Types a letter (or accented letter) in the current shift state. */
+    private fun typeLetter(s: String) {
         lastAutocorrect = null
         lastInsert = null
         val upper = shift != Shift.OFF
-        commit(if (upper) c.uppercase() else c.toString())
+        // ß has no single-letter capital in Kotlin ("SS"), so it stays as it is.
+        commit(if (upper && s.uppercase().length == s.length) s.uppercase() else s)
         if (shift == Shift.ONCE) { shift = Shift.OFF; render() }
-    }.also { letterKeys.add(it) }
+    }
+
+    // ---- accents (hold a letter) ---------------------------------------------
+
+    /** The accents row on screen: which cell the finger is over, and where the cells are. */
+    private class AccentRow(
+        val window: PopupWindow,
+        val cells: List<TextView>,
+        val items: List<String>,
+        val leftOnScreen: Int,
+        val cellWidth: Int,
+        val startX: Float,
+    ) {
+        var selected = 0
+        var slid = false   // a small wobble as it opens shouldn't move off the first accent
+    }
+
+    private var accentRow: AccentRow? = null
+    private val accentHoldMs = 350L
+    private var fingerX = 0f
+
+    /**
+     * Hold a letter: a row of accents pops up above it. Slide along to pick one and let go to
+     * type it; let go without sliding to type the first (highlighted) one. Like Samsung Keyboard.
+     */
+    private fun holdForAccents(k: TextView, accents: List<String>) {
+        val show = Runnable {
+            k.isPressed = false   // so the normal tap doesn't also fire on release
+            k.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            showAccents(k, accents)
+        }
+        k.setOnTouchListener { _, ev ->
+            fingerX = ev.rawX
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { main.postDelayed(show, accentHoldMs); false }
+                MotionEvent.ACTION_MOVE -> {
+                    val row = accentRow ?: return@setOnTouchListener false
+                    selectAccent(row, ev.rawX)
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    main.removeCallbacks(show)
+                    val row = accentRow ?: return@setOnTouchListener false
+                    dismissAccents()
+                    typeLetter(row.items[row.selected])
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    main.removeCallbacks(show)
+                    dismissAccents()
+                    false
+                }
+                else -> accentRow != null
+            }
+        }
+    }
+
+    private fun showAccents(k: TextView, accents: List<String>) {
+        dismissAccents()
+        val r = root ?: return
+        val upper = shift != Shift.OFF
+        val keyWin = IntArray(2).also { k.getLocationInWindow(it) }
+        val keyScreen = IntArray(2).also { k.getLocationOnScreen(it) }
+        val rootWin = IntArray(2).also { r.getLocationInWindow(it) }
+
+        // On the right half of the keyboard the row grows leftwards (and is reversed), so the
+        // first accent is always right above your finger.
+        val rightSide = keyWin[0] + k.width / 2 > rootWin[0] + r.width / 2
+        val items = if (rightSide) accents.reversed() else accents
+        val cellW = minOf(dp(40), r.width / items.size)
+        val cellH = dp(52)
+        val width = cellW * items.size
+
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = rounded(getColor(R.color.key_special), 10)
+            elevation = dp(6).toFloat()
+        }
+        val cells = items.map { a ->
+            TextView(this).apply {
+                text = if (upper && a.uppercase().length == a.length) a.uppercase() else a
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(getColor(R.color.key_text))
+            }.also { bar.addView(it, LinearLayout.LayoutParams(cellW, cellH)) }
+        }
+
+        var left = if (rightSide) keyWin[0] + k.width - width else keyWin[0]
+        left = left.coerceIn(rootWin[0], rootWin[0] + r.width - width)
+        val top = keyWin[1] - cellH + dp(4)
+
+        val window = PopupWindow(bar, width, cellH).apply {
+            isClippingEnabled = false
+            isTouchable = false        // the finger stays on the key; we track it from there
+            setBackgroundDrawable(null)
+        }
+        window.showAtLocation(r, Gravity.NO_GRAVITY, left, top)
+
+        val row = AccentRow(window, cells, items, left + (keyScreen[0] - keyWin[0]), cellW, fingerX)
+        row.selected = if (rightSide) items.size - 1 else 0
+        accentRow = row
+        highlightAccent(row)
+    }
+
+    private fun selectAccent(row: AccentRow, rawX: Float) {
+        if (!row.slid && Math.abs(rawX - row.startX) < dp(10)) return
+        row.slid = true
+        val i = ((rawX - row.leftOnScreen) / row.cellWidth).toInt().coerceIn(0, row.items.size - 1)
+        if (i != row.selected) {
+            row.selected = i
+            highlightAccent(row)
+        }
+    }
+
+    private fun highlightAccent(row: AccentRow) {
+        row.cells.forEachIndexed { i, cell ->
+            cell.background = if (i == row.selected) rounded(getColor(R.color.mic_idle), 8) else null
+        }
+    }
+
+    private fun dismissAccents() {
+        accentRow?.window?.dismiss()
+        accentRow = null
+    }
 
     private fun char(s: String): TextView = key(s, 1f) { lastAutocorrect = null; commit(s) }
 
@@ -436,6 +570,8 @@ class SpeakEasyIme : InputMethodService() {
         if (!autocorrectOn) return false
         val ic = currentInputConnection ?: return false
         val word = currentWord()
+        // An accent you picked on purpose (Māori, café) is never "corrected" back to plain letters.
+        if (word.any { it.isLetter() && it.code > 127 }) return false
         val fix = assist.autocorrectFor(word) ?: return false
         ic.deleteSurroundingText(word.length, 0)
         ic.commitText(fix, 1)
@@ -558,6 +694,7 @@ class SpeakEasyIme : InputMethodService() {
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        dismissAccents()
         // Keyboard hidden mid-recording: don't lose a brain dump; drop a short dictation.
         if (state == State.RECORDING) {
             if (brainDump) stopAndSend() else {

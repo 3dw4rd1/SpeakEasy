@@ -27,6 +27,7 @@ Updates: download the new APK and install over the top (same signing key, settin
 - Tap the mic. It turns red while listening.
 - Stop talking for ~2.5 s (or tap again) and the text is typed in.
 - ⌨ goes back to your normal keyboard. ⌫ holds to repeat.
+- Hold a letter for its accents (ā ē ī ō ū first, for te reo Māori): slide to pick, let go to type.
 - Say "new paragraph", "bullet point", "full stop" etc. for formatting.
 - Correct yourself out loud ("at 3, no, 4 o'clock") and it keeps the correction.
 
