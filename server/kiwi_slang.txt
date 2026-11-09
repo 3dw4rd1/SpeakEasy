@@ -1,0 +1,65 @@
+# Built-in New Zealand slang, shipped with the server (your personal dictionary is separate).
+# One per line: 'term = meaning'. The meaning helps the cleanup model spot the word in context.
+# The model keeps these words as spoken and spells them like this, instead of "correcting" them.
+# Lines starting with '#' are ignored.
+
+# Everyday
+chur = thanks, cheers
+sweet as = all good, no worries
+choice = great
+mean = excellent
+hard out = definitely, really
+yeah nah = no
+nah yeah = yes
+she'll be right = it'll be fine
+heaps = lots, very
+stoked = really pleased
+gutted = really disappointed
+knackered = exhausted
+munted = broken, wrecked
+chocka = full
+bugger all = very little
+not even = no way
+pack a sad = sulk
+rark up = tell off
+egg = idiot
+dag = a funny character
+tiki tour = the long way round
+wop-wops = the middle of nowhere
+bro = mate
+cuz = mate, cousin
+eh = isn't it? (end of a sentence)
+
+# Things
+togs = swimsuit
+jandals = flip-flops
+gumboots = rubber boots
+chilly bin = cooler box
+dairy = corner shop
+bach = holiday home
+crib = holiday home (South Island)
+ute = pickup truck
+smoko = tea break
+sammie = sandwich
+scroggin = trail mix
+lollies = sweets
+fizzy = soft drink
+hokey pokey = ice cream flavour
+pav = pavlova
+tramping = hiking
+
+# Te reo Māori in everyday Kiwi English (with macrons)
+kia ora = hello, thanks
+ka pai = good, well done
+kai = food
+mahi = work
+whānau = family
+puku = belly
+aroha = love
+tu meke = awesome
+taihoa = wait, hold on
+ka kite = see you
+haere mai = welcome
+kūmara = sweet potato
+Pākehā = New Zealander of European descent
+Aotearoa = New Zealand
