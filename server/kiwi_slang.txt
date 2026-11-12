@@ -1,4 +1,4 @@
-# Built-in New Zealand slang, shipped with the server (your personal dictionary is separate).
+# Built-in New Zealand and Australian slang, shipped with the server (your personal dictionary is separate).
 # One per line: 'term = meaning'. The meaning helps the cleanup model spot the word in context.
 # The model keeps these words as spoken and spells them like this, instead of "correcting" them.
 # Lines starting with '#' are ignored.
@@ -64,6 +64,39 @@ kūmara = sweet potato
 Pākehā = New Zealander of European descent
 Aotearoa = New Zealand
 
+# Australian (words both sides of the Tasman share, like ute, smoko and heaps, are listed above)
+arvo = afternoon
+brekkie = breakfast
+servo = petrol station
+bottle-o = bottle shop
+esky = cooler box
+thongs = flip-flops
+sunnies = sunglasses
+doona = duvet
+barbie = barbecue
+snag = sausage
+Maccas = McDonald's
+mozzie = mosquito
+footy = football
+rego = vehicle registration
+sickie = a day off sick
+tradie = tradesperson
+sparky = electrician
+chippy = carpenter
+brickie = bricklayer
+hard yakka = hard work
+no worries = it's fine
+too easy = no problem, done
+reckon = think
+ripper = excellent
+fair dinkum = genuine, honestly
+bloody oath = absolutely
+deadset = truly, seriously
+chockers = full
+she'll be apples = it'll be fine
+g'day = hello
+how ya going = how are you
+
 # How speech recognition tends to mangle the slang ('heard -> meant'). These are hints for the
 # cleanup model, used only when the slang fits the context; they are never blanket replacements.
 ciao bro -> chur bro
@@ -90,3 +123,8 @@ ka pie -> ka pai
 kia aura -> kia ora
 mar he -> mahi
 far nar -> whānau
+serve oh -> servo
+bottle oh -> bottle-o
+brekky -> brekkie
+macca's -> Maccas
+mackers -> Maccas

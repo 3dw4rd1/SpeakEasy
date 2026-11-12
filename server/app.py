@@ -125,7 +125,7 @@ def parse_vocab() -> tuple[list[str], list[tuple[str, str]]]:
 
 
 def load_slang() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """kiwi_slang.txt (baked into the image). '#' starts a comment.
+    """kiwi_slang.txt (NZ and Australian; baked into the image). '#' starts a comment.
 
     'term = meaning'  a slang word to keep as spoken.
     'heard -> meant'  how speech recognition tends to mangle it (a hint, applied only in context).
@@ -185,16 +185,16 @@ def speaker_blocks(terms: list[str], replacements: list[tuple[str, str]],
             + ", ".join(terms))
     if SLANG:
         parts.append(
-            "New Zealand slang the speaker may use. Keep it as spoken and spell it like this; "
+            "New Zealand and Australian slang the speaker may use. Keep it as spoken and spell it like this; "
             "don't swap it for standard English or 'fix' it to a similar-sounding word "
             "(e.g. 'chur' is not 'sure', 'togs' is not 'dogs'). Only use a term when it was "
             "actually said:\n"
             + "\n".join(f"{t} ({m})" if m else t for t, m in SLANG))
     if SLANG_MISHEARD:
         parts.append(
-            "Speech recognition often mangles Kiwi slang into similar-sounding words. When one "
+            "Speech recognition often mangles Kiwi and Aussie slang into similar-sounding words. When one "
             "of these appears and the slang reading fits the context better (a casual message, "
-            "next to 'bro', at the start of a reply), write the slang instead. Otherwise leave "
+            "next to 'bro' or 'mate', at the start of a reply), write the slang instead. Otherwise leave "
             "it: a real 'batch' of products stays 'batch'. If a phrase is garbled and none of "
             "these fit, keep the transcript's words; never substitute a different phrase "
             "(e.g. never turn a garbled phrase into 'swear to God'):\n"
