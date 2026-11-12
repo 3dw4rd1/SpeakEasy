@@ -4,12 +4,15 @@ POST /v1/dictate     multipart: audio, app, category, style, mode, context, hint
 POST /v1/correction  JSON {raw, text, corrected, app}: learn from a fix the speaker made
 GET/PUT /v1/dictionary, /v1/snippets   JSON {"text": ...}: the editable data files
 
-Pipeline: Groq Whisper (biased with the dictionary) -> Claude cleanup (style, dictionary,
-snippets, past corrections, surrounding text) -> deterministic replacements -> snippet expansion.
+Pipeline: Groq Whisper, twice at once (one pass biased with the dictionary, one plain, so a
+mishearing in one shows up as a disagreement) -> Claude cleanup (style, dictionary, snippets,
+past corrections, surrounding text, both transcripts) -> deterministic replacements -> snippet
+expansion.
 
 Auth: Authorization: Bearer <SPEAKEASY_TOKEN>. API keys never leave this server.
 """
 
+import asyncio
 import hmac
 import json
 import logging
@@ -31,6 +34,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 TOKEN = os.environ["SPEAKEASY_TOKEN"]
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "whisper-large-v3")
+# Used only if WHISPER_MODEL keeps failing (Groq overloaded): a worse answer beats none.
+WHISPER_FALLBACK_MODEL = os.environ.get("WHISPER_FALLBACK_MODEL", "whisper-large-v3-turbo")
+# Listen to every recording twice (with and without the glossary) and cross-check. 0 = once.
+SECOND_OPINION = os.environ.get("SECOND_OPINION", "1") == "1"
+# Keep the audio of dictations the recogniser struggled with (data/audio/, newest 50), so
+# they can be replayed when tuning. Off unless set to 1. Never kept for private fields.
+KEEP_HARD_AUDIO = os.environ.get("KEEP_HARD_AUDIO", "0") == "1"
 CLEANUP_MODEL = os.environ.get("CLEANUP_MODEL", "claude-haiku-5-5")
 BRAINDUMP_MODEL = os.environ.get("BRAINDUMP_MODEL", "claude-sonnet-5-5")
 EDIT_MODEL = os.environ.get("EDIT_MODEL", "claude-sonnet-5-5")
@@ -243,6 +253,13 @@ def dictation_system(category: str, style: str, terms, replacements, snippets) -
         "- If the text before the cursor ends mid-sentence, continue it naturally (no capital, "
         "no greeting).\n"
         "- If the transcript is empty or only noise, output nothing.\n"
+        "- Sometimes a <second_transcript> of the same audio is included, from a second pass of "
+        "the recogniser. Where the two agree, trust them. Where they differ, one of them misheard: "
+        "choose the reading that makes sense in context (a dictionary term if one fits), never "
+        "both. It is the same speech heard twice, so don't repeat anything.\n"
+        "- If the transcript is garbled or makes little sense, still output your best cleaned-up "
+        "reading of those words. Never reply with an explanation, apology, question or note about "
+        "the transcript: whatever you output is typed straight into the speaker's message.\n"
         "- Output only the cleaned text, with no preamble or quotes."
     )
     blocks = [rules] + speaker_blocks(terms, replacements, snippets)
@@ -309,7 +326,7 @@ def to_system(stable: list[str], volatile: list[str]) -> list[dict]:
     return system
 
 
-def user_message(raw: str, context: str, hint: str) -> str:
+def user_message(raw: str, context: str, hint: str, alt: str = "", shaky: bool = False) -> str:
     parts = []
     if context.strip():
         parts.append("<text_before_cursor>\n" + context[-1500:] + "\n</text_before_cursor>\n"
@@ -317,6 +334,11 @@ def user_message(raw: str, context: str, hint: str) -> str:
     if hint.strip():
         parts.append(f"<field_hint>{hint[:200]}</field_hint>")
     parts.append(f"<transcript>\n{raw}\n</transcript>")
+    if alt:
+        parts.append(f"<second_transcript>\n{alt}\n</second_transcript>")
+    if shaky:
+        parts.append("(The recogniser found this audio hard to hear, so expect more misheard "
+                     "words than usual. Use the context and dictionary to work out what was meant.)")
     return "\n\n".join(parts)
 
 
@@ -334,41 +356,179 @@ def glossary(terms: list[str]) -> list[str]:
     return terms + [t for t in SLANG_TERMS if t.lower() not in known]
 
 
-def whisper_prompt(terms: list[str]) -> str:
-    # Whisper reads the prompt as preceding text and only looks at ~224 tokens, so keep it
-    # short: the Kiwi primer first (never cut), then the glossary.
-    head = KIWI_PRIMER + " " if SLANG else ""
-    return (head + "Glossary: " + ", ".join(terms))[:850] if terms else head.strip()
+def whisper_prompt(terms: list[str], context: str = "") -> str:
+    """What Whisper is told came just before the audio: Kiwi primer, glossary, then the real text.
+
+    Whisper only reads the last ~224 tokens of this (roughly 800 characters), so each part has a
+    budget, and the text actually in front of the cursor goes last where it counts most: it
+    carries on mid-sentence and picks up names already in the conversation.
+    """
+    parts = []
+    if SLANG:
+        parts.append(KIWI_PRIMER)
+    # Terms the conversation already mentions first, then the rest, whole terms only.
+    seen = context.lower()
+    ordered = sorted(terms, key=lambda t: t.lower() not in seen)   # stable: file order otherwise
+    chosen, used = [], 0
+    for t in ordered:
+        if used + len(t) + 2 > 450:
+            break
+        chosen.append(t)
+        used += len(t) + 2
+    if chosen:
+        parts.append("Glossary: " + ", ".join(chosen) + ".")
+    tail = " ".join(context.split())[-200:]
+    if " " in tail:
+        parts.append(tail[tail.index(" ") + 1:])    # start at a whole word
+    return " ".join(parts)
 
 
-async def transcribe(audio: bytes, filename: str, content_type: str, terms: list[str]) -> str:
-    prompt = whisper_prompt(terms)
-    resp = await http.post(
-        "https://api.groq.com/openai/v1/audio/transcriptions",
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        files={"file": (filename, audio, content_type)},
-        data={
-            "model": WHISPER_MODEL,
-            "language": LANGUAGE,
-            "response_format": "json",
-            "temperature": "0",
-            **({"prompt": prompt} if prompt else {}),
-        },
-    )
-    if resp.status_code != 200:
-        log.error("groq %s: %s", resp.status_code, resp.text[:500])
-        raise HTTPException(status_code=502, detail=f"transcription failed ({resp.status_code})")
-    text = resp.json().get("text", "").strip()
+class Heard:
+    """One pass of the recogniser: the text, and how sure it was."""
+
+    def __init__(self, text: str, logprob: float | None = None, compression: float | None = None):
+        self.text = text
+        self.logprob = logprob            # average per-token log probability; nearer 0 = surer
+        self.compression = compression    # very repetitive text (> 2.4) is usually a hallucination
+
+    @property
+    def shaky(self) -> bool:
+        return ((self.logprob is not None and self.logprob < -0.6)
+                or (self.compression is not None and self.compression > 2.4))
+
+    @property
+    def broken(self) -> bool:
+        return ((self.logprob is not None and self.logprob < -1.0)
+                or (self.compression is not None and self.compression > 2.4))
+
+
+class SpeechError(Exception):
+    def __init__(self, status: int, body: str = ""):
+        super().__init__(f"groq {status}: {body[:300]}")
+        self.status = status
+
+
+async def whisper(audio: bytes, filename: str, content_type: str, prompt: str, model: str) -> Heard:
+    """One Groq transcription call. Busy/overloaded answers are retried once."""
+    for attempt in (1, 2):
+        try:
+            resp = await http.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                files={"file": (filename, audio, content_type)},
+                data={
+                    "model": model,
+                    "language": LANGUAGE,
+                    "response_format": "verbose_json",   # includes how confident each segment was
+                    "temperature": "0",
+                    **({"prompt": prompt} if prompt else {}),
+                },
+            )
+        except httpx.HTTPError as e:
+            if attempt == 2:
+                raise SpeechError(0, type(e).__name__) from e
+            continue
+        if resp.status_code == 200:
+            break
+        if attempt == 2 or resp.status_code not in (429, 500, 502, 503, 504):
+            raise SpeechError(resp.status_code, resp.text)
+        await asyncio.sleep(0.4)
+    body = resp.json()
+    text = (body.get("text") or "").strip()
+    segments = [s for s in body.get("segments") or [] if isinstance(s, dict)]
+    weights = [max(float(s.get("end", 0)) - float(s.get("start", 0)), 0.1) for s in segments]
+    logprob = compression = None
+    if segments and all("avg_logprob" in s for s in segments):
+        logprob = sum(float(s["avg_logprob"]) * w for s, w in zip(segments, weights)) / sum(weights)
+    if segments:
+        compression = max(float(s.get("compression_ratio", 0)) for s in segments)
     # Whisper sometimes echoes its prompt back on near-silent audio.
-    echoed = text.startswith("Glossary:") or (len(text) > 10 and text in prompt)
-    return "" if echoed else text
+    if text.startswith("Glossary:") or (len(text) > 10 and text in prompt):
+        text = ""
+    return Heard(text, logprob, compression)
+
+
+def same_words(a: str, b: str) -> bool:
+    return re.findall(r"[\w']+", a.lower()) == re.findall(r"[\w']+", b.lower())
+
+
+async def transcribe(audio: bytes, filename: str, content_type: str, terms: list[str],
+                     context: str = "") -> tuple[Heard, str]:
+    """Returns what was heard, plus a second opinion where the two passes disagree ("" if not).
+
+    The glossary pass spells your names and slang right, but the glossary can also talk Whisper
+    into hearing those words (or plain gibberish) in unclear audio. The plain pass can't be
+    led astray like that, so the pair cover for each other, and if one call fails the other
+    still gives an answer.
+    """
+    prompt = whisper_prompt(terms, context)
+    calls = [whisper(audio, filename, content_type, prompt, WHISPER_MODEL)]
+    if SECOND_OPINION and prompt:
+        calls.append(whisper(audio, filename, content_type, "", WHISPER_MODEL))
+    results = await asyncio.gather(*calls, return_exceptions=True)
+    for r in results:
+        if isinstance(r, Exception) and not isinstance(r, SpeechError):
+            raise r
+    errors = [r for r in results if isinstance(r, SpeechError)]
+    for e in errors:
+        log.error("%s", e)
+    heard = [r for r in results if isinstance(r, Heard)]
+    if not heard:
+        # Last resort: the faster model, no prompt (a too-long prompt is one way to get a 400).
+        try:
+            heard = [await whisper(audio, filename, content_type, "", WHISPER_FALLBACK_MODEL)]
+        except SpeechError as e:
+            log.error("fallback %s", e)
+            status = errors[0].status
+            if status == 429:
+                detail = "Speech service is rate-limited - wait a minute and retry"
+            elif status == 401:
+                detail = "Speech service rejected the server's Groq key"
+            elif status == 0:
+                detail = "Couldn't reach the speech service - retry in a moment"
+            else:
+                detail = f"Speech service error ({status}) - retry in a moment"
+            raise HTTPException(status_code=502, detail=detail)
+    first = heard[0]
+    second = heard[1] if len(heard) > 1 else None
+    if second is None:
+        return first, ""
+    # Normally the glossary pass leads. Swap if it clearly went wrong and the plain pass didn't.
+    if (not first.text and second.text) or (first.broken and not second.broken):
+        first, second = second, first
+    if not second.text or second.broken or same_words(first.text, second.text):
+        return first, ""
+    return first, second.text
 
 
 def text_of(msg) -> str:
     return "".join(b.text for b in msg.content if b.type == "text").strip()
 
 
-async def clean(raw: str, system: list[dict], user: str) -> str:
+REPLY_OPENERS = ("i can't", "i cannot", "i can not", "i'm unable", "i am unable", "i'm sorry",
+                 "i am sorry", "sorry,", "i apologise", "i apologize", "the transcript", "this transcript",
+                 "it seems", "it looks like", "it appears", "unfortunately", "i don't", "i do not",
+                 "i'm not able", "i am not able", "i couldn't", "i could not", "there is no", "there's no",
+                 "no transcript", "note:", "here is", "here's")
+
+
+def is_reply_not_cleanup(out: str, heard: str, known: list[str]) -> bool:
+    """True if the model talked about the transcript ("I can't make sense of this...") instead
+    of cleaning it. That must never be typed into someone's message, so we check that the
+    output is still mostly made of words that were actually said."""
+    def tokens(t: str) -> list[str]:
+        return re.findall(r"[a-zà-ÿā-ū']+", t.lower().replace("’", "'"))
+    said = set(tokens(heard)) | {w for k in known for w in tokens(k)}
+    words = tokens(out)
+    if len(words) < 5:
+        return False
+    share = sum(w in said for w in words) / len(words)
+    opener = out.lower().lstrip("\"'([*_ ").startswith(REPLY_OPENERS)
+    said_it = heard.lower().lstrip().startswith(REPLY_OPENERS)
+    return share < 0.35 or (opener and not said_it and share < 0.6)
+
+
+async def clean(raw: str, system: list[dict], user: str, known: list[str] = (), alt: str = "") -> str:
     try:
         msg = await claude.messages.create(
             model=CLEANUP_MODEL,
@@ -383,7 +543,11 @@ async def clean(raw: str, system: list[dict], user: str) -> str:
         return raw
     if msg.stop_reason == "refusal":
         return raw
-    return text_of(msg) or raw
+    text = text_of(msg)
+    if text and is_reply_not_cleanup(text, raw + " " + alt, list(known)):
+        log.warning("cleanup answered instead of cleaning; using the raw transcript")
+        return raw
+    return text or raw
 
 
 async def smart(model: str, system: list[dict], user: str) -> str | None:
@@ -493,15 +657,22 @@ async def dictate(
     snippets = parse_snippets()
 
     t0 = time.monotonic()
-    raw = await transcribe(data, audio.filename or "audio.m4a",
-                           audio.content_type or "audio/mp4", glossary(terms))
+    heard, alt = await transcribe(data, audio.filename or "audio.m4a",
+                                  audio.content_type or "audio/mp4", glossary(terms),
+                                  "" if mode == "edit" else context)
+    raw = heard.text
     t1 = time.monotonic()
     if raw.lower() in HALLUCINATIONS:
         return {"text": "", "raw": raw, "ms": {"stt": int((t1 - t0) * 1000)}}
+    hard = heard.shaky or bool(alt)
+    if hard and KEEP_HARD_AUDIO and private != "1":
+        keep_audio(data)
 
     if mode == "edit" and not selection.strip():
         mode = "dictate"   # e.g. a History retry of an edit: nothing to edit, so just dictate
-    user = user_message(raw, context, hint)
+    if mode != "dictate":
+        alt = ""   # only the dictation prompt explains what a second transcript is
+    user = user_message(raw, context, hint, alt, heard.shaky)
     if mode == "edit":
         text = await smart(EDIT_MODEL, edit_system(category, style, terms, replacements, snippets),
                            edit_message(raw, selection[:20000], context))
@@ -512,7 +683,9 @@ async def dictate(
     elif mode == "braindump":
         text = await organise(raw, braindump_system(terms, replacements, snippets), user)
     else:
-        text = await clean(raw, dictation_system(category, style, terms, replacements, snippets), user)
+        known = terms + SLANG_TERMS + [c for _, c in replacements] + [m for _, m in SLANG_MISHEARD]
+        text = await clean(raw, dictation_system(category, style, terms, replacements, snippets),
+                           user, known, alt)
     text = apply_replacements(text, replacements)
     if mode != "braindump" and style == "very_casual":
         text = restore_capitals(raw, text, terms)
@@ -520,16 +693,33 @@ async def dictate(
     t2 = time.monotonic()
 
     ms = {"stt": int((t1 - t0) * 1000), "clean": int((t2 - t1) * 1000)}
-    log.info("dictate mode=%s app=%s cat=%s style=%s audio=%dms stt=%dms clean=%dms chars=%d",
-             mode, app_pkg, category, style, duration_ms, ms["stt"], ms["clean"], len(text))
+    log.info("dictate mode=%s app=%s cat=%s style=%s audio=%dms stt=%dms clean=%dms chars=%d "
+             "confidence=%s second_opinion=%s",
+             mode, app_pkg, category, style, duration_ms, ms["stt"], ms["clean"], len(text),
+             "?" if heard.logprob is None else f"{heard.logprob:.2f}", "differs" if alt else "same")
     if SAVE_HISTORY and private != "1":   # incognito fields are never logged
         append_jsonl("history.jsonl", {
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "mode": mode, "app": app_pkg, "category": category, "style": style,
             **({"selection": selection[:5000]} if mode == "edit" else {}),
             "raw": raw, "text": text, "ms": ms,
+            # For reviewing what goes wrong: the other pass (if it disagreed) and the confidence.
+            **({"raw_alt": alt} if alt else {}),
+            **({"logprob": round(heard.logprob, 3)} if heard.logprob is not None else {}),
         })
     return {"text": text, "raw": raw, "ms": ms}
+
+
+def keep_audio(data: bytes) -> None:
+    """Save a hard-to-hear recording for later tuning; keep only the newest 50."""
+    try:
+        folder = DATA_DIR / "audio"
+        folder.mkdir(exist_ok=True)
+        (folder / (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + ".m4a")).write_bytes(data)
+        for old in sorted(folder.glob("*.m4a"))[:-50]:
+            old.unlink()
+    except OSError as e:
+        log.error("can't keep audio: %s", e)
 
 
 @app.post("/v1/correction")
@@ -631,11 +821,11 @@ async def feedback_list(authorization: str | None = Header(None)) -> dict:
     return {"reports": reports}
 
 
-def data_endpoint(path: str, filename: str) -> None:
+def data_endpoint(path: str, filename: str, extra: dict | None = None) -> None:
     @app.get(path)
     async def get_file(authorization: str | None = Header(None)) -> dict:
         check_auth(authorization)
-        return {"text": read_text(filename)}
+        return {"text": read_text(filename), **(extra or {})}
 
     @app.put(path)
     async def put_file(payload: dict = Body(...), authorization: str | None = Header(None)) -> dict:
@@ -647,5 +837,6 @@ def data_endpoint(path: str, filename: str) -> None:
         return {"ok": True}
 
 
-data_endpoint("/v1/dictionary", "vocab.txt")
+# "slang" lets the keyboard's autocorrect leave the built-in Kiwi slang alone.
+data_endpoint("/v1/dictionary", "vocab.txt", {"slang": "\n".join(SLANG_TERMS)})
 data_endpoint("/v1/snippets", "snippets.txt")

@@ -109,8 +109,8 @@ class SpeakEasyIme : InputMethodService() {
         api = Api(prefs)
         recorder = Recorder(this)
         history = History(this)
-        assist = TypingAssist(this) { word, sugs -> showSuggestions(word, sugs) }
-        assist.setVocab(sp().getString("vocab_cache", "") ?: "")
+        assist = TypingAssist(this) { r -> showSuggestions(r.word, r.suggestions, r.autocorrect) }
+        assist.setVocab(sp().getString("vocab_cache", "") ?: "", sp().getString("slang_cache", "") ?: "")
     }
 
     private fun sp() = getSharedPreferences("speakeasy", MODE_PRIVATE)
@@ -221,9 +221,9 @@ class SpeakEasyIme : InputMethodService() {
         if (prefs.token.isBlank() || now - sp().getLong("vocab_fetched_at", 0) < 60 * 60 * 1000L) return
         sp().edit().putLong("vocab_fetched_at", now).apply()
         worker.execute {
-            val text = runCatching { api.getText("/v1/dictionary") }.getOrNull() ?: return@execute
-            sp().edit().putString("vocab_cache", text).apply()
-            main.post { assist.setVocab(text) }
+            val (text, slang) = runCatching { api.dictionary() }.getOrNull() ?: return@execute
+            sp().edit().putString("vocab_cache", text).putString("slang_cache", slang).apply()
+            main.post { assist.setVocab(text, slang) }
         }
     }
 
@@ -599,16 +599,21 @@ class SpeakEasyIme : InputMethodService() {
     // ---- suggestions, autocorrect, undo -------------------------------------
 
     /** The word right before the cursor ("" if the cursor follows a space or punctuation). */
-    private fun currentWord(): String {
-        val before = currentInputConnection?.getTextBeforeCursor(48, 0)?.toString() ?: return ""
-        return WORD_AT_END.find(before)?.value ?: ""
+    private fun currentWord(): String = wordAndStart().first
+
+    /** The word before the cursor, and whether it starts a sentence (so a capital is just grammar). */
+    private fun wordAndStart(): Pair<String, Boolean> {
+        val before = currentInputConnection?.getTextBeforeCursor(48, 0)?.toString() ?: return "" to false
+        val word = WORD_AT_END.find(before)?.value ?: ""
+        val lead = before.dropLast(word.length).trimEnd(' ')
+        return word to (lead.isEmpty() || lead.last() in ".!?\n")
     }
 
     // Suggestions are looked up once typing pauses for a moment, not on every keystroke:
     // each lookup reads the text back from the app, which is slow while you're typing fast.
     private val refreshNow = Runnable {
-        if (!suggestionsOn || hasSelection || emojiMode) showSuggestions("", emptyList())
-        else assist.update(currentWord())
+        if (!suggestionsOn || hasSelection || emojiMode) showSuggestions("", emptyList(), null)
+        else wordAndStart().let { (word, atStart) -> assist.update(word, atStart) }
     }
 
     private fun refreshWord() {
@@ -620,10 +625,10 @@ class SpeakEasyIme : InputMethodService() {
     private fun finishWord(): Boolean {
         if (!autocorrectOn) return false
         val ic = currentInputConnection ?: return false
-        val word = currentWord()
+        val (word, atStart) = wordAndStart()
         // An accent you picked on purpose (Māori, café) is never "corrected" back to plain letters.
         if (word.any { it.isLetter() && it.code > 127 }) return false
-        val fix = assist.autocorrectFor(word) ?: return false
+        val fix = assist.autocorrectFor(word, atStart) ?: return false
         ic.deleteSurroundingText(word.length, 0)
         ic.commitText(fix, 1)
         lastAutocorrect = word to fix
@@ -642,6 +647,7 @@ class SpeakEasyIme : InputMethodService() {
         }
         ic.deleteSurroundingText(fixed.length + tail.length + 1, 0)
         ic.commitText(typed + tail, 1)
+        if (!privateField) assist.learn(typed)   // you wanted it as typed: don't correct it again
         return true
     }
 
@@ -650,9 +656,10 @@ class SpeakEasyIme : InputMethodService() {
         lastAutocorrect = null
         if (currentWord() == word) ic.deleteSurroundingText(word.length, 0)
         ic.commitText("$choice ", 1)
+        if (choice == word && !privateField) assist.learn(word)   // tapped your own spelling: remember it
     }
 
-    private fun showSuggestions(word: String, suggestions: List<String>) {
+    private fun showSuggestions(word: String, suggestions: List<String>, autocorrect: String?) {
         val undo = lastInsert
         if (undo != null && System.currentTimeMillis() < undo.until) {
             fillStrip(listOf("↶ Undo" to { undoLast() }), bold = 0)
@@ -660,7 +667,7 @@ class SpeakEasyIme : InputMethodService() {
         }
         if (word.isEmpty() || suggestions.isEmpty()) { fillStrip(emptyList(), -1); return }
         // Bold the word that space will put in (the autocorrection, if there is one).
-        val fix = if (autocorrectOn) assist.autocorrectFor(word) else null
+        val fix = if (autocorrectOn) autocorrect else null
         val bold = suggestions.indexOfFirst { it == (fix ?: word) }
         fillStrip(suggestions.map { s -> s to { pickSuggestion(word, s) } }, bold)
     }
@@ -683,7 +690,7 @@ class SpeakEasyIme : InputMethodService() {
 
     private fun showUndo(text: String, original: String) {
         lastInsert = Insertion(text, original, System.currentTimeMillis() + 8000)
-        showSuggestions("", emptyList())
+        showSuggestions("", emptyList(), null)
         main.postDelayed({ refreshWord() }, 8100)
     }
 
@@ -739,7 +746,6 @@ class SpeakEasyIme : InputMethodService() {
         emojiMode = false
         buildKeys()
         autoCaps()
-        if (suggestionsOn) assist.start()
         checkForUpdateQuietly()
         refreshVocabQuietly()
         refreshWord()

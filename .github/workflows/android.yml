@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
     paths: ['android/**', '.github/workflows/android.yml']
+  # PRs build and run the tests too, so problems show up before merging. Only main publishes.
+  pull_request:
+    paths: ['android/**', '.github/workflows/android.yml']
   workflow_dispatch:
 
 permissions:
@@ -31,6 +34,10 @@ jobs:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
         run: echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
 
+      - name: Unit tests
+        working-directory: android
+        run: gradle testReleaseUnitTest --no-daemon --stacktrace
+
       - name: Build release APK
         working-directory: android
         env:
@@ -48,6 +55,7 @@ jobs:
           path: SpeakEasy.apk
 
       - name: Publish release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
           HAS_KEY: ${{ secrets.KEYSTORE_B64 != '' }}
