@@ -104,7 +104,7 @@ class Recorder(private val context: Context) {
         r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
         r.setAudioChannels(1)
         r.setAudioSamplingRate(16000)
-        r.setAudioEncodingBitRate(32000)
+        r.setAudioEncodingBitRate(64000)   // 32k smeared quiet or fast speech; uploads are still tiny
         r.setOutputFile(file.absolutePath)
         r.prepare()
         r.start()
@@ -163,7 +163,11 @@ class Api(private val prefs: Prefs) {
         client.newCall(req).execute().use { resp ->
             val body = resp.body?.string() ?: ""
             if (resp.code == 401) throw IOException("Server rejected the access token - check Settings")
-            if (!resp.isSuccessful) throw IOException("Server error ${resp.code}")
+            if (!resp.isSuccessful) {
+                // The server explains what went wrong in plain words ("detail"); show that.
+                val detail = runCatching { JSONObject(body).optString("detail") }.getOrDefault("")
+                throw IOException(detail.ifBlank { "Server error ${resp.code}" })
+            }
             return JSONObject(body)
         }
     }
@@ -201,6 +205,13 @@ class Api(private val prefs: Prefs) {
 
     @Throws(IOException::class)
     fun getText(path: String): String = call(request(path).build()).optString("text", "")
+
+    /** The personal dictionary text, and the server's built-in slang terms (one per line). */
+    @Throws(IOException::class)
+    fun dictionary(): Pair<String, String> {
+        val o = call(request("/v1/dictionary").build())
+        return o.optString("text", "") to o.optString("slang", "")
+    }
 
     @Throws(IOException::class)
     fun putText(path: String, text: String) {

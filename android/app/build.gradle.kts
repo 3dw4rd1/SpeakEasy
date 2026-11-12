@@ -44,8 +44,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    // The spelling tests read the real word list.
+    testOptions { unitTests.all { it.systemProperty("words", file("src/main/assets/words.txt").path) } }
 }
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    testImplementation("junit:junit:4.13.2")
 }
