@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2   # so a merge commit's PR branch (HEAD^2) is available for release notes
+          fetch-depth: 0   # full history: release notes look through a merged PR's commits
 
       - uses: actions/setup-java@v4
         with:
@@ -65,8 +65,14 @@ jobs:
             exit 0
           fi
           # The commit message becomes the "what's new" text in the app's update dialog.
-          # For a merged PR, use the PR's own commit, not "Merge pull request #N from ...".
-          REF=HEAD; git rev-parse -q --verify HEAD^2 >/dev/null && REF=HEAD^2
+          # For a merged PR, use the PR's newest user-facing commit: not "Merge pull request #N
+          # from ...", and not housekeeping commits (CI:, Docs:, Test:) added during review.
+          REF=HEAD
+          if git rev-parse -q --verify HEAD^2 >/dev/null; then
+            REF=$(git log --format='%H %s' HEAD^1..HEAD^2 \
+              | grep -v -E '^[0-9a-f]+ (CI|Docs?|Tests?):' | head -1 | cut -d' ' -f1)
+            REF=${REF:-HEAD^2}
+          fi
           git log -1 --pretty=%B "$REF" | grep -v -e '^Co-Authored-By' -e '^Claude-Session' > notes.txt
           gh release create "v1.0.${{ github.run_number }}" SpeakEasy.apk \
             --title "SpeakEasy 1.0.${{ github.run_number }}" \
