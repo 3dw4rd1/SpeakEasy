@@ -72,6 +72,12 @@ Updates: download the new APK and install over the top (same signing key, settin
    dictionary rules. Turn off with `SAVE_HISTORY=0`.
 6. The cleanup model's answer is checked before it's typed: if it wrote *about* the transcript
    ("I can't make sense of this") instead of cleaning it, the plain transcript is used.
+7. Whisper's made-up words are cut out: when it gets stuck in a loop ("the the the…") or
+   "hears" a sentence in silence, those parts are dropped. If the whole recording was too unclear
+   to trust, nothing is typed: you get "Couldn't hear that clearly" and the audio stays in
+   History to retry.
+8. Learning from corrections only picks up names, brands and jargon, never a rule that would
+   swap an ordinary word (like `pin -> pen`) in every message.
 
 ### Going further: a better speech engine
 

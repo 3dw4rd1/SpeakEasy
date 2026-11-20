@@ -28,6 +28,8 @@ class FakeGroq:
         answer = self.plan[kind]
         if isinstance(answer, int):
             return httpx.Response(answer, text="nope")
+        if isinstance(answer, dict):   # a full Groq reply, segments and all
+            return httpx.Response(200, json=answer)
         text, logprob = answer if isinstance(answer, tuple) else (answer, -0.2)
         return httpx.Response(200, json={"text": text, "segments": [
             {"start": 0, "end": 2, "avg_logprob": logprob, "compression_ratio": 1.2}]})
@@ -140,3 +142,51 @@ def test_dictionary_includes_slang_for_the_keyboard(setup):
     client, _ = setup(FakeGroq("", ""))
     body = client.get("/v1/dictionary", headers=AUTH).json()
     assert "Jotun" in body["text"] and "chur" in body["slang"].splitlines()
+
+
+def seg(text, logprob=-0.2, compression=1.2, no_speech=0.01):
+    return {"text": text, "start": 0, "end": 2, "avg_logprob": logprob,
+            "compression_ratio": compression, "no_speech_prob": no_speech}
+
+
+def test_a_whisper_loop_is_cut_out_and_the_real_words_kept(setup):
+    loop = {"text": "Call me after lunch. the the the the the the", "segments": [
+        seg(" Call me after lunch."), seg(" the the the the the the", compression=4.1)]}
+    client, _ = setup(FakeGroq(loop, loop))
+    assert dictate(client).json()["text"] == "Call me after lunch."
+
+
+def test_words_invented_in_silence_are_dropped(setup):
+    reply = {"text": "See you soon. Thanks for watching and subscribe.", "segments": [
+        seg(" See you soon."), seg(" Thanks for watching and subscribe.", logprob=-1.3, no_speech=0.9)]}
+    client, _ = setup(FakeGroq(reply, reply))
+    assert dictate(client).json()["text"] == "See you soon."
+
+
+def test_unclear_audio_is_an_error_not_gibberish(setup):
+    client, claude = setup(FakeGroq(("Wah ka he tum lo bar", -1.4), ("Wa ka hey tom low", -1.5)))
+    r = dictate(client)
+    assert r.status_code == 422 and "hear that clearly" in r.json()["detail"]
+    assert not claude.seen          # nothing went on to be "cleaned up" and typed
+
+
+def test_nothing_but_a_loop_is_an_error_too(setup):
+    loop = {"text": "you you you you you you you", "segments": [seg(" you you you you you you", compression=5.0)]}
+    client, _ = setup(FakeGroq(loop, loop))
+    assert dictate(client).status_code == 422
+
+
+def test_replacements_leave_the_right_spelling_alone():
+    rules = [("kauri", "Kauri Systems"), ("jordan", "Jotun")]
+    assert (server.apply_replacements("Kauri Systems and kauri sell jordan, Jotun", rules)
+            == "Kauri Systems and Kauri Systems sell Jotun, Jotun")
+
+
+def test_only_names_and_jargon_are_learned_from_corrections():
+    keep = server.learnable
+    assert keep("jordan -> Jotun") == "jordan -> Jotun"
+    assert keep("jotun -> Jotun") == "Jotun"          # capitals only: just the term
+    assert keep("SteelMaster") == "SteelMaster"
+    assert keep("pin -> pen") is None                 # ordinary word: would hit every 'pin'
+    assert keep("and -> Andy") is None
+    assert keep("None.") is None and keep("No new terms") is None and keep("None") is None

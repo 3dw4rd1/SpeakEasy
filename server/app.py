@@ -386,20 +386,33 @@ def whisper_prompt(terms: list[str], context: str = "") -> str:
 class Heard:
     """One pass of the recogniser: the text, and how sure it was."""
 
-    def __init__(self, text: str, logprob: float | None = None, compression: float | None = None):
+    def __init__(self, text: str, logprob: float | None = None, compression: float | None = None,
+                 looped: bool = False):
         self.text = text
         self.logprob = logprob            # average per-token log probability; nearer 0 = surer
         self.compression = compression    # very repetitive text (> 2.4) is usually a hallucination
+        self.looped = looped              # Whisper got stuck repeating itself somewhere (cut out)
 
     @property
     def shaky(self) -> bool:
         return ((self.logprob is not None and self.logprob < -0.6)
-                or (self.compression is not None and self.compression > 2.4))
+                or (self.compression is not None and self.compression > 2.4) or self.looped)
 
     @property
     def broken(self) -> bool:
         return ((self.logprob is not None and self.logprob < -1.0)
-                or (self.compression is not None and self.compression > 2.4))
+                or (self.compression is not None and self.compression > 2.4)
+                or (self.looped and not self.text))
+
+
+def made_up(segment: dict) -> bool:
+    """A stretch of audio Whisper invented words for rather than heard: stuck in a loop
+    ("the the the..."), or confidently 'hearing' a sentence in silence. These are Whisper's own
+    thresholds for the same checks."""
+    compression = float(segment.get("compression_ratio", 0))
+    logprob = float(segment.get("avg_logprob", 0))
+    no_speech = float(segment.get("no_speech_prob", 0))
+    return compression > 2.4 or (no_speech > 0.6 and logprob < -1.0)
 
 
 class SpeechError(Exception):
@@ -436,6 +449,12 @@ async def whisper(audio: bytes, filename: str, content_type: str, prompt: str, m
     body = resp.json()
     text = (body.get("text") or "").strip()
     segments = [s for s in body.get("segments") or [] if isinstance(s, dict)]
+    looped = any(float(s.get("compression_ratio", 0)) > 2.4 for s in segments)
+    kept = [s for s in segments if not made_up(s)]
+    if len(kept) < len(segments) and all(isinstance(s.get("text"), str) for s in segments):
+        # Cut out the invented parts and keep what was really said around them.
+        text = " ".join(s["text"].strip() for s in kept).strip()
+        segments = kept
     weights = [max(float(s.get("end", 0)) - float(s.get("start", 0)), 0.1) for s in segments]
     logprob = compression = None
     if segments and all("avg_logprob" in s for s in segments):
@@ -445,7 +464,7 @@ async def whisper(audio: bytes, filename: str, content_type: str, prompt: str, m
     # Whisper sometimes echoes its prompt back on near-silent audio.
     if text.startswith("Glossary:") or (len(text) > 10 and text in prompt):
         text = ""
-    return Heard(text, logprob, compression)
+    return Heard(text, logprob, compression, looped)
 
 
 def same_words(a: str, b: str) -> bool:
@@ -491,11 +510,17 @@ async def transcribe(audio: bytes, filename: str, content_type: str, terms: list
             raise HTTPException(status_code=502, detail=detail)
     first = heard[0]
     second = heard[1] if len(heard) > 1 else None
+    # Normally the glossary pass leads. Swap if it clearly went wrong and the plain pass didn't.
+    if second and ((not first.text and second.text) or (first.broken and not second.broken)):
+        first, second = second, first
+    if first.broken:
+        # Every pass was too unsure to trust: typing it would put made-up words in the message.
+        # Fail instead, so the phone keeps the audio in History for a retry.
+        log.warning("recogniser unsure (confidence=%s, looped=%s): not typing it",
+                    "?" if first.logprob is None else f"{first.logprob:.2f}", first.looped)
+        raise HTTPException(status_code=422, detail="Couldn't hear that clearly - try again")
     if second is None:
         return first, ""
-    # Normally the glossary pass leads. Swap if it clearly went wrong and the plain pass didn't.
-    if (not first.text and second.text) or (first.broken and not second.broken):
-        first, second = second, first
     if not second.text or second.broken or same_words(first.text, second.text):
         return first, ""
     return first, second.text
@@ -576,8 +601,38 @@ async def organise(raw: str, system: list[dict], user: str) -> str:
 
 def apply_replacements(text: str, replacements: list[tuple[str, str]]) -> str:
     for heard, correct in replacements:
-        text = re.sub(rf"(?<!\w){re.escape(heard)}(?!\w)", correct, text, flags=re.I)
+        # Text already spelt the right way is matched first and left alone, so a rule like
+        # 'kauri -> Kauri Systems' can't turn "Kauri Systems" into "Kauri Systems Systems".
+        pattern = rf"(?<!\w)(?:{re.escape(correct)}|{re.escape(heard)})(?!\w)"
+        text = re.sub(pattern, lambda m: m.group(0) if m.group(0).lower() == correct.lower()
+                      else correct, text, flags=re.I)
     return text
+
+
+COMMON_WORDS = set(
+    "a an and the to of in on at it is i you he she we they me my your our his her their for "
+    "with or but so be as by no not this that are was were do did have has had can will would "
+    "just all if then than there here what who how when where why yes ok okay".split())
+
+
+def learnable(line: str) -> str | None:
+    """Only names, brands and jargon: a learned rule is applied to every dictation, so one that
+    swaps an ordinary word ('pin -> pen') would mangle every message that really means it."""
+    heard, arrow, term = line.rpartition("->") if "->" in line else ("", "", line)
+    heard, term = heard.strip(), term.strip()
+    low = term.lower()
+    if arrow and heard.lower() == low:
+        heard, arrow = "", ""   # 'jotun -> Jotun' only fixes capitals: the term alone does that
+    if (not term or len(term.split()) > 4 or term.endswith((".", ":", "?"))
+            or low in ("none", "nothing", "n/a") or low.startswith(("no ", "there ", "output"))):
+        return None   # the model's commentary ("None.", "No new terms"), not a term
+    if not any(c.isupper() or c.isdigit() for c in term):
+        return None   # an ordinary lowercase word
+    if not arrow:
+        return term
+    if not heard or heard.lower() in COMMON_WORDS:
+        return None   # 'and -> Andy' would hit every "and"
+    return f"{heard} -> {term}"
 
 
 def restore_capitals(raw: str, text: str, terms: list[str]) -> str:
@@ -750,8 +805,9 @@ async def correction(payload: dict = Body(...), authorization: str | None = Head
                 "hand-corrected version. List only names, places, companies, products, "
                 "jargon or unusual spellings that the speaker corrected and that should go in "
                 "a dictation dictionary. One per line, as either 'Term' or 'misheard -> Term' "
-                "when the transcript had a consistent mishearing. Ignore punctuation, style "
-                "and ordinary-word edits. Output nothing if there are none."),
+                "when the transcript had a consistent mishearing. Never list ordinary English "
+                "words: a rule is applied to every future message. Ignore punctuation, style "
+                "and ordinary-word edits. Output nothing at all if there are none."),
             messages=[{"role": "user", "content":
                        f"<transcript>{raw}</transcript>\n<output>{text}</output>\n"
                        f"<corrected>{corrected}</corrected>"}],
@@ -763,7 +819,8 @@ async def correction(payload: dict = Body(...), authorization: str | None = Head
 
     learned = []
     for line in lines:
-        if not line or len(line) > 80:
+        line = learnable(line) if line and len(line) <= 80 else None
+        if not line:
             continue
         key = line.split("->", 1)[0].strip().lower()
         if key and key not in known:
