@@ -81,6 +81,8 @@ class SpeakEasyIme : InputMethodService() {
     private var shift = Shift.OFF
     private var lastShiftTap = 0L
     private var symbols = false
+    private var keypad = Keypad.NONE   // the number pad this field wants, if any
+    private var numpad = false         // ...and whether it's showing (ABC swaps to the letters)
     private var emojiMode = false
     private var emojiTab = 0
     private var idleText = "Tap to talk"
@@ -271,6 +273,7 @@ class SpeakEasyIme : InputMethodService() {
         shiftShown = null
 
         if (emojiMode) { buildEmoji(area); return }
+        if (numpad && keypad != Keypad.NONE) { buildNumpad(area); return }
 
         if (!symbols) {
             area.addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
@@ -286,8 +289,11 @@ class SpeakEasyIme : InputMethodService() {
                 backspaceKey()))
         }
 
-        val toggle = specialKey(if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
-            symbols = !symbols; buildKeys(); renderShift()
+        // In a number field the symbols page leads back to the number pad: 123 -> ABC -> ?123 -> 123.
+        val toPad = symbols && keypad != Keypad.NONE
+        val toggle = specialKey(if (toPad) "123" else if (symbols) "ABC" else "?123", 1.5f, textSize = 15f) {
+            if (toPad) { symbols = false; numpad = true } else symbols = !symbols
+            buildKeys(); renderShift()
         }
         val emoji = specialKey("😊", 1f) {
             emojiMode = true
@@ -296,6 +302,21 @@ class SpeakEasyIme : InputMethodService() {
         }
         area.addView(row(toggle, emoji, punct(","), spaceKey(4f), punct("."), specialKey("⏎", 1.5f) { enter() }))
         renderShift()
+    }
+
+    /** Digits-only fields (PIN, code, quantity, phone, date): a phone-style pad with big keys. */
+    private fun buildNumpad(area: LinearLayout) {
+        fun digit(d: String) = key(d, 1f, textSize = 26f) { lastAutocorrect = null; commit(d) }
+        fun side(s: String) = specialKey(s, 1f, textSize = 22f) { lastAutocorrect = null; commit(s) }
+        val abc = specialKey("ABC", 1f, textSize = 15f) { numpad = false; symbols = false; buildKeys(); renderShift() }
+        area.addView(row(digit("1"), digit("2"), digit("3"), backspaceKey().weighted(1f)))
+        area.addView(row(digit("4"), digit("5"), digit("6"), side(keypad.side[0])))
+        area.addView(row(digit("7"), digit("8"), digit("9"), side(keypad.side[1])))
+        area.addView(row(abc, digit("0"), side(keypad.side[2]), specialKey("⏎", 1f) { enter() }))
+    }
+
+    private fun TextView.weighted(w: Float) = apply {
+        layoutParams = LinearLayout.LayoutParams(0, rowH, w)
     }
 
     /** Space bar. Hold it to switch to another keyboard (replaces the old ⌨ button). */
@@ -744,6 +765,8 @@ class SpeakEasyIme : InputMethodService() {
 
         symbols = false
         emojiMode = false
+        keypad = Keypad.forInputType(type)
+        numpad = keypad != Keypad.NONE
         buildKeys()
         autoCaps()
         checkForUpdateQuietly()
